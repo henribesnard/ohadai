@@ -1,0 +1,68 @@
+# Configuration des modèles de langage pour le projet OHADA Expert-Comptable
+# Version optimisée avec modèle d'embedding léger
+
+# Liste des fournisseurs par ordre de priorité pour les réponses
+provider_priority:
+  - "deepseek"
+  - "openai"
+  - "local"
+
+# Liste des fournisseurs par ordre de priorité pour les embeddings
+embedding_provider_priority:
+  - "local_embedding"
+  - "openai"
+
+# Fournisseur par défaut pour les réponses
+default_provider: "deepseek"
+
+# Fournisseur par défaut pour les embeddings
+default_embedding_provider: "local_embedding"
+
+providers:
+  deepseek:
+    api_key_env: "DEEPSEEK_API_KEY"
+    base_url: "https://api.deepseek.com/v1"
+    models:
+      default: "deepseek-chat"
+      analysis: "deepseek-chat"
+      response: "deepseek-chat"
+    parameters:
+      temperature: 0.3
+      top_p: 0.9
+      max_tokens: 1500
+      
+  openai:
+    api_key_env: "OPENAI_API_KEY"
+    models:
+      default: "gpt-3.5-turbo-0125"
+      embedding: "text-embedding-3-small"
+      analysis: "gpt-3.5-turbo-0125"
+      response: "gpt-4-turbo-preview"
+    parameters:
+      temperature: 0.3
+      top_p: 0.9
+      max_tokens: 1500
+      dimensions: 1536  # Pour les embeddings OpenAI
+      
+  local_embedding:
+    # Pas besoin de clé API pour les modèles locaux d'embeddings
+    enabled: true
+    models:
+      embedding: "all-MiniLM-L6-v2"  # Modèle léger avec dimension 384
+    parameters:
+      dimensions: 384  # Dimension réduite par rapport au modèle précédent
+      local: true  # Indique que c'est un modèle local, pas une API
+      
+  # Configuration pour les modèles locaux de génération (à activer plus tard)
+  local:
+    enabled: false
+    api_key_env: "OLLAMA_API_KEY"  # Optionnel
+    base_url: "http://localhost:11434/api"
+    models:
+      default: "mistral:7b-instruct-v0.2"
+      analysis: "mistral:7b-instruct-v0.2"
+      response: "llama3:8b"
+    parameters:
+      temperature: 0.3
+      top_p: 0.9
+      max_tokens: 1500

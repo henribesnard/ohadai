@@ -1,0 +1,17 @@
+{
+  "id": "06fadecd-b872-4e80-b5ff-54946f7c4bb0",
+  "title": "Conversation du 13/03/2025 20:35",
+  "created_at": 1741894504.4870243,
+  "messages": [
+    {
+      "role": "user",
+      "content": "comment marche l'amortissement dégressif ?\n",
+      "timestamp": 1741894562.1728988
+    },
+    {
+      "role": "assistant",
+      "content": "L'amortissement dégressif est une méthode d'amortissement qui permet de constater une charge d'amortissement plus importante au début de la vie d'un actif, puis de réduire cette charge au fil du temps. Cette méthode est particulièrement adaptée pour les actifs qui perdent plus de valeur au début de leur utilisation, comme les équipements technologiques ou les véhicules.\n\nVoici comment fonctionne l'amortissement dégressif :\n\n1. **Base de calcul** : L'amortissement dégressif se calcule sur la valeur nette comptable (VNC) de l'actif, c'est-à-dire sa valeur d'origine moins les amortissements déjà pratiqués.\n\n2. **Taux d'amortissement** : Le taux d'amortissement dégressif est généralement plus élevé que le taux linéaire. Il est souvent déterminé en multipliant le taux linéaire par un coefficient (par exemple, 1,25 ou 1,75 selon la nature de l'actif).\n\n3. **Formule de calcul** : \n   - L'amortissement annuel est calculé en multipliant la valeur nette comptable (VNC) par le taux d'amortissement dégressif.\n   - La VNC est recalculée chaque année en soustrayant l'amortissement de l'année précédente.\n\n4. **Passage à l'amortissement linéaire** : Lorsque l'amortissement dégressif devient inférieur à l'amortissement linéaire calculé sur la durée résiduelle, on passe à l'amortissement linéaire pour les années restantes.\n\n### Exemple d'application :\n\nSupposons un actif d'une valeur de 100 000 F, avec une durée d'utilité de 5 ans et un coefficient de 1,75.\n\n- **Taux linéaire** : 100% divisé par 5 ans = 20%.\n- **Taux dégressif** : 20% multiplié par 1,75 = 35%.\n\n**Année 1** :\n- Amortissement = 100 000 F multiplié par 35% = 35 000 F.\n- VNC en fin d'année = 100 000 F moins 35 000 F = 65 000 F.\n\n**Année 2** :\n- Amortissement = 65 000 F multiplié par 35% = 22 750 F.\n- VNC en fin d'année = 65 000 F moins 22 750 F = 42 250 F.\n\n**Année 3** :\n- Amortissement = 42 250 F multiplié par 35% = 14 787,50 F.\n- VNC en fin d'année = 42 250 F moins 14 787,50 F = 27 462,50 F.\n\n**Année 4** :\n- Amortissement linéaire sur les 2 années restantes = 27 462,50 F divisé par 2 = 13 731,25 F.\n- VNC en fin d'année = 27 462,50 F moins 13 731,25 F = 13 731,25 F.\n\n**Année 5** :\n- Amortissement = 13 731,25 F.\n- VNC en fin d'année = 0.\n\n### Conclusion :\n\nL'amortissement dégressif permet de mieux refléter la perte de valeur rapide des actifs au début de leur utilisation. Il est important de suivre les règles du plan comptable OHADA pour déterminer les taux et les méthodes d'amortissement appropriés.",
+      "timestamp": 1741894647.9328563
+    }
+  ]
+}
