@@ -75,7 +75,7 @@ def run_streamlit_app():
     Lance l'application Streamlit.
     """
     logger.info("Démarrage de l'application Streamlit")
-    os.system("streamlit run src/ohada_app.py")
+    os.system("streamlit run ohada_app.py")
 
 def init_database(reset=False, model=None):
     """

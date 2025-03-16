@@ -1,22 +1,25 @@
 """
-Module de gestion de l'authentification pour intégrer Google OAuth.
+Module de gestion de l'authentification avec système interne de mots de passe et JWT.
 """
 import os
 import json
 import logging
-import requests
-from typing import Dict, Any, Optional
-from google.oauth2 import id_token
-from google.auth.transport import requests as google_requests
+import time
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional, Tuple
+import uuid
+import secrets
+import hashlib
+import jwt
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # Configuration du logging
 logger = logging.getLogger("ohada_auth")
 
 # Gestionnaire d'authentification
 class AuthManager:
-    """Gestionnaire d'authentification pour les services OAuth externes"""
+    """Gestionnaire d'authentification pour le système interne"""
     
     def __init__(self, db_manager):
         """
@@ -26,82 +29,168 @@ class AuthManager:
             db_manager: Instance du gestionnaire de base de données
         """
         self.db_manager = db_manager
-        self.google_client_id = os.getenv("GOOGLE_CLIENT_ID")
         self.security = HTTPBearer()
+        
+        # Configuration JWT
+        self.jwt_secret = os.getenv("JWT_SECRET_KEY", secrets.token_hex(32))
+        self.jwt_algorithm = "HS256"
+        self.jwt_expiration = int(os.getenv("JWT_EXPIRATION_MINUTES", "1440"))  # 24 heures par défaut
     
-    async def verify_google_token(self, token: str) -> Dict[str, Any]:
+    def _hash_password(self, password: str, salt: Optional[str] = None) -> Tuple[str, str]:
         """
-        Vérifie un token ID Google et retourne les informations d'utilisateur
+        Génère un hash sécurisé d'un mot de passe
         
         Args:
-            token: Token ID Google
+            password: Mot de passe en clair
+            salt: Sel optionnel (généré si non fourni)
             
         Returns:
-            Informations d'utilisateur validées
+            Tuple (hash du mot de passe, sel utilisé)
+        """
+        if salt is None:
+            salt = secrets.token_hex(16)
+        
+        # Combiner le mot de passe et le sel
+        key = hashlib.pbkdf2_hmac(
+            'sha256',
+            password.encode('utf-8'),
+            salt.encode('utf-8'),
+            100000  # Nombre d'itérations
+        ).hex()
+        
+        return key, salt
+    
+    def verify_password(self, password: str, stored_hash: str, salt: str) -> bool:
+        """
+        Vérifie si un mot de passe correspond au hash stocké
+        
+        Args:
+            password: Mot de passe à vérifier
+            stored_hash: Hash stocké dans la base de données
+            salt: Sel utilisé pour le hash
+            
+        Returns:
+            True si le mot de passe est correct, False sinon
+        """
+        new_hash, _ = self._hash_password(password, salt)
+        return new_hash == stored_hash
+    
+    def create_jwt_token(self, user_id: str, email: str) -> Dict[str, Any]:
+        """
+        Crée un token JWT pour un utilisateur
+        
+        Args:
+            user_id: Identifiant de l'utilisateur
+            email: Email de l'utilisateur
+            
+        Returns:
+            Dictionnaire contenant le token et sa date d'expiration
+        """
+        # Définir la date d'expiration
+        expiration = datetime.utcnow() + timedelta(minutes=self.jwt_expiration)
+        
+        # Créer le payload du token
+        payload = {
+            "sub": user_id,
+            "email": email,
+            "iat": datetime.utcnow(),
+            "exp": expiration,
+            "jti": str(uuid.uuid4())  # Identifiant unique du token
+        }
+        
+        # Générer le token
+        token = jwt.encode(payload, self.jwt_secret, algorithm=self.jwt_algorithm)
+        
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "expires_at": expiration.isoformat()
+        }
+    
+    def verify_jwt_token(self, token: str) -> Dict[str, Any]:
+        """
+        Vérifie un token JWT et retourne les informations utilisateur
+        
+        Args:
+            token: Token JWT à vérifier
+            
+        Returns:
+            Informations d'utilisateur contenues dans le token
             
         Raises:
             HTTPException: En cas d'erreur de validation
         """
         try:
-            # Vérifier le token avec l'API Google
-            if not self.google_client_id:
-                logger.error("GOOGLE_CLIENT_ID non défini")
+            # Vérifier le token
+            payload = jwt.decode(token, self.jwt_secret, algorithms=[self.jwt_algorithm])
+            
+            # Extraire les informations utilisateur
+            user_id = payload.get("sub")
+            email = payload.get("email")
+            
+            if user_id is None or email is None:
                 raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Configuration OAuth manquante"
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token invalide - données manquantes"
                 )
             
-            idinfo = id_token.verify_oauth2_token(
-                token, 
-                google_requests.Request(), 
-                self.google_client_id
-            )
+            # Vérifier si le token n'est pas révoqué (à implémenter avec une liste noire si nécessaire)
             
-            # Vérifier que l'émetteur est bien Google
-            if idinfo['iss'] not in ['accounts.google.com', 'https://accounts.google.com']:
-                raise ValueError('Émetteur invalide')
-            
-            # Extraire les informations pertinentes
-            user_info = {
-                'user_id': idinfo['sub'],  # L'ID Google unique
-                'email': idinfo['email'],
-                'name': idinfo.get('name', ''),
-                'profile_picture': idinfo.get('picture', ''),
-                'auth_provider': 'google'
+            return {
+                "user_id": user_id,
+                "email": email
             }
             
-            return user_info
-            
-        except ValueError as e:
-            logger.error(f"Erreur de validation du token Google: {e}")
+        except jwt.ExpiredSignatureError:
+            logger.warning("Token expiré")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token Google invalide"
+                detail="Token expiré"
+            )
+        except jwt.InvalidTokenError as e:
+            logger.error(f"Token invalide: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token invalide"
             )
     
-    async def create_or_update_user(self, user_info: Dict[str, Any]) -> Dict[str, Any]:
+    async def register_user(self, email: str, password: str, name: str = "") -> Dict[str, Any]:
         """
-        Crée ou met à jour un utilisateur dans la base de données
+        Inscrit un nouvel utilisateur
         
         Args:
-            user_info: Informations de l'utilisateur validées
+            email: Email de l'utilisateur
+            password: Mot de passe en clair
+            name: Nom de l'utilisateur (optionnel)
             
         Returns:
-            Informations complètes de l'utilisateur
+            Informations de l'utilisateur créé
             
         Raises:
-            HTTPException: En cas d'erreur
+            HTTPException: En cas d'erreur d'inscription
         """
         try:
             # Vérifier si l'utilisateur existe déjà
-            existing_user = self.db_manager.get_user(user_info['user_id'])
-            
+            existing_user = self.db_manager.get_user_by_email(email)
             if existing_user:
-                # Mettre à jour la dernière connexion
-                self.db_manager.update_user_login(user_info['user_id'])
-                return existing_user
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Un utilisateur avec cet email existe déjà"
+                )
             
-            # Créer l'utilisateur s'il n'existe pas
+            # Générer le hash du mot de passe
+            password_hash, salt = self._hash_password(password)
+            
+            # Créer l'utilisateur
+            user_info = {
+                "user_id": str(uuid.uuid4()),
+                "email": email,
+                "name": name,
+                "password_hash": password_hash,
+                "salt": salt,
+                "auth_provider": "internal"
+            }
+            
             user_id = self.db_manager.create_user(user_info)
             if not user_id:
                 raise HTTPException(
@@ -109,18 +198,93 @@ class AuthManager:
                     detail="Erreur lors de la création de l'utilisateur"
                 )
             
-            return self.db_manager.get_user(user_id)
+            # Récupérer l'utilisateur créé
+            user = self.db_manager.get_user(user_id)
             
+            # Nettoyer les données sensibles avant de les retourner
+            if user:
+                if "password_hash" in user:
+                    del user["password_hash"]
+                if "salt" in user:
+                    del user["salt"]
+            
+            return user
+            
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.error(f"Erreur lors de la création/mise à jour de l'utilisateur: {e}")
+            logger.error(f"Erreur lors de l'inscription: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Erreur de base de données"
+                detail="Erreur lors de l'inscription"
+            )
+    
+    async def login_user(self, email: str, password: str) -> Dict[str, Any]:
+        """
+        Connecte un utilisateur
+        
+        Args:
+            email: Email de l'utilisateur
+            password: Mot de passe en clair
+            
+        Returns:
+            Token JWT et informations de l'utilisateur
+            
+        Raises:
+            HTTPException: En cas d'erreur de connexion
+        """
+        try:
+            # Récupérer l'utilisateur
+            user = self.db_manager.get_user_by_email(email)
+            
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Email ou mot de passe incorrect"
+                )
+            
+            # Vérifier le mot de passe
+            if "password_hash" not in user or "salt" not in user:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Compte non configuré pour l'authentification par mot de passe"
+                )
+            
+            if not self.verify_password(password, user["password_hash"], user["salt"]):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Email ou mot de passe incorrect"
+                )
+            
+            # Mettre à jour la dernière connexion
+            self.db_manager.update_user_login(user["user_id"])
+            
+            # Générer un token JWT
+            token_data = self.create_jwt_token(user["user_id"], user["email"])
+            
+            # Nettoyer les données sensibles avant de les retourner
+            if "password_hash" in user:
+                del user["password_hash"]
+            if "salt" in user:
+                del user["salt"]
+            
+            return {
+                "user": user,
+                "token": token_data
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Erreur lors de la connexion: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Erreur lors de la connexion"
             )
     
     async def get_current_user(self, credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())) -> Dict[str, Any]:
         """
-        Valide le token et récupère l'utilisateur courant
+        Valide le token JWT et récupère l'utilisateur courant
         
         Args:
             credentials: Informations d'authentification
@@ -134,17 +298,28 @@ class AuthManager:
         try:
             token = credentials.credentials
             
-            # Déterminer le type de token (actuellement uniquement Google)
-            # Pour une implémentation complète, il faudrait vérifier le type de token
+            # Vérifier le token JWT
+            token_data = self.verify_jwt_token(token)
             
-            # Pour Google
-            user_info = await self.verify_google_token(token)
-            user = await self.create_or_update_user(user_info)
+            # Récupérer l'utilisateur
+            user = self.db_manager.get_user(token_data["user_id"])
+            
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Utilisateur non trouvé"
+                )
+            
+            # Nettoyer les données sensibles
+            if "password_hash" in user:
+                del user["password_hash"]
+            if "salt" in user:
+                del user["salt"]
             
             return user
             
-        except HTTPException as e:
-            raise e
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Erreur d'authentification: {e}")
             raise HTTPException(

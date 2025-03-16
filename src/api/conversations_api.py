@@ -19,7 +19,7 @@ logger = logging.getLogger("ohada_api_conversations")
 # Initialiser le gestionnaire de base de données
 db_manager = DatabaseManager()
 
-# Créer le dépendance d'authentification
+# Créer la dépendance d'authentification
 get_current_user = create_auth_dependency(db_manager)
 
 # Créer le routeur

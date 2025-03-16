@@ -24,10 +24,11 @@ from src.retrieval.ohada_hybrid_retriever import create_ohada_query_api, OhadaHy
 from src.utils.ohada_utils import save_query_history, get_query_history, format_time
 from src.utils.ohada_streaming import StreamingLLMClient, generate_streaming_response
 from src.db.db_manager import DatabaseManager
-from src.auth.auth_manager import AuthManager, create_auth_dependency
+from src.auth.auth_manager import create_auth_dependency
 
-# Import du routeur de conversations
+# Import des routeurs
 from src.api.conversations_api import router as conversations_router
+from src.api.auth_routes import router as auth_router
 
 # Configuration du logging
 logging.basicConfig(
@@ -39,8 +40,8 @@ logger = logging.getLogger("ohada_api")
 # Initialisation de l'API
 app = FastAPI(
     title="OHADA Expert-Comptable API",
-    description="API pour l'assistant d'expertise comptable OHADA avec gestion utilisateurs",
-    version="1.1.0"
+    description="API pour l'assistant d'expertise comptable OHADA avec authentification interne",
+    version="1.2.0"
 )
 
 # Configuration CORS pour permettre les requêtes cross-origin
@@ -79,10 +80,6 @@ class QueryResponse(BaseModel):
     user_message_id: Optional[str] = None
     ia_message_id: Optional[str] = None
 
-# Modèles pour l'authentification
-class GoogleAuthRequest(BaseModel):
-    token: str
-
 # Stockage en mémoire des requêtes en cours
 ongoing_queries = {}
 
@@ -101,6 +98,9 @@ def get_retriever():
 # Inclusion du routeur de conversations
 app.include_router(conversations_router)
 
+# Inclusion du routeur d'authentification
+app.include_router(auth_router)
+
 #######################
 # ROUTES PRINCIPALES
 #######################
@@ -111,7 +111,7 @@ def read_root():
     return {
         "status": "online",
         "service": "OHADA Expert-Comptable API",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "endpoints": {
             "query": "/query - Point d'entrée principal pour interroger l'assistant",
             "stream": "/stream - Point d'entrée pour les requêtes avec streaming",
@@ -120,42 +120,6 @@ def read_root():
             "conversations": "/conversations/* - Points d'entrée pour la gestion des conversations"
         }
     }
-
-#######################
-# ROUTES AUTHENTICATION
-#######################
-
-@app.post("/auth/google", response_model=Dict[str, Any])
-async def google_auth(request: GoogleAuthRequest):
-    """
-    Authentification avec Google OAuth
-    """
-    try:
-        # Créer une instance du gestionnaire d'authentification
-        auth_manager = AuthManager(db_manager)
-        
-        # Vérifier le token Google
-        user_info = await auth_manager.verify_google_token(request.token)
-        
-        # Créer ou mettre à jour l'utilisateur
-        user = await auth_manager.create_or_update_user(user_info)
-        
-        # Retourner les informations utilisateur
-        return {
-            "user": user,
-            "status": "success"
-        }
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur d'authentification: {str(e)}")
-
-@app.get("/auth/me", response_model=Dict[str, Any])
-async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """
-    Récupère les informations de l'utilisateur actuellement authentifié
-    """
-    return current_user
 
 #######################
 # ROUTES OHADA QUERY
@@ -521,6 +485,31 @@ async def get_db_stats(current_user: Dict[str, Any] = Depends(get_current_user))
     except Exception as e:
         logger.error(f"Erreur lors de la récupération des statistiques: {e}")
         raise HTTPException(status_code=500, detail="Erreur lors de la récupération des statistiques")
+
+@app.get("/admin/cleanup", response_model=Dict[str, Any])
+async def cleanup_database(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """
+    Nettoie la base de données (supprime les tokens révoqués expirés)
+    """
+    try:
+        # Vérifier si l'utilisateur est admin
+        admin_emails = os.getenv("ADMIN_EMAILS", "").split(",")
+        if current_user["email"] not in admin_emails:
+            raise HTTPException(status_code=403, detail="Accès non autorisé")
+        
+        # Nettoyer la base de données
+        cleanup_stats = db_manager.cleanup_database()
+        
+        return {
+            "status": "success",
+            "message": "Nettoyage de la base de données effectué",
+            "details": cleanup_stats
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erreur lors du nettoyage de la base de données: {e}")
+        raise HTTPException(status_code=500, detail="Erreur lors du nettoyage de la base de données")
 
 #######################
 # LANCEMENT DU SERVEUR
