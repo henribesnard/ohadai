@@ -25,6 +25,7 @@ from src.utils.ohada_utils import save_query_history, get_query_history, format_
 from src.utils.ohada_streaming import StreamingLLMClient, generate_streaming_response
 from src.db.db_manager import DatabaseManager
 from src.auth.auth_manager import create_auth_dependency
+from src.auth.jwt_manager import JWTManager
 
 # Import des routeurs
 from src.api.conversations_api import router as conversations_router
@@ -55,6 +56,9 @@ app.add_middleware(
 
 # Initialisation du gestionnaire de base de données
 db_manager = DatabaseManager()
+
+# Initialisation du gestionnaire JWT
+jwt_manager = JWTManager(db_manager)
 
 # Création de la dépendance d'authentification
 get_current_user = create_auth_dependency(db_manager)
@@ -90,6 +94,27 @@ def get_retriever():
         logger.info("Initialisation du retriever API")
         app.retriever = create_ohada_query_api()
     return app.retriever
+
+# Fonction pour authentifier via token (pour les endpoints SSE)
+def authenticate_via_token(token: str) -> Optional[Dict[str, Any]]:
+    """
+    Authentifie un utilisateur via un token JWT
+    
+    Args:
+        token: Token JWT
+        
+    Returns:
+        Informations utilisateur ou None si authentification échouée
+    """
+    try:
+        payload = jwt_manager.decode_token(token)
+        user_id = payload.get("sub")
+        if user_id:
+            return db_manager.get_user(user_id)
+        return None
+    except Exception as e:
+        logger.error(f"Erreur lors de l'authentification via token: {e}")
+        return None
 
 #######################
 # INCLUSION DES ROUTERS
@@ -416,9 +441,16 @@ async def stream_endpoint(
     n_results: int = Query(5, ge=1, le=20, description="Nombre de résultats à considérer"),
     include_sources: bool = Query(True, description="Inclure les sources dans la réponse"),
     save_to_conversation: Optional[str] = Query(None, description="ID de conversation à utiliser"),
+    _token: Optional[str] = Query(None, description="Token JWT pour authentification via paramètre"),
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
 ):
     """Endpoint pour le streaming des réponses"""
+    # Si on n'a pas d'utilisateur mais qu'un token a été fourni, essayer de l'authentifier
+    if not current_user and _token:
+        current_user = authenticate_via_token(_token)
+        if current_user:
+            logger.info(f"Utilisateur authentifié via _token: {current_user['email']}")
+
     request = QueryRequest(
         query=query,
         partie=partie,
@@ -431,9 +463,17 @@ async def stream_endpoint(
     
     retriever = get_retriever()
     
+    headers = {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Access-Control-Allow-Origin": "*",
+    }
+    
     return StreamingResponse(
         stream_response(request, retriever, current_user),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
+        headers=headers
     )
 
 @app.get("/history")
