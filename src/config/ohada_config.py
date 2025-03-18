@@ -107,6 +107,13 @@ class LLMConfig:
                         "max_tokens": 1500
                     }
                 }
+            },
+            "assistant_personality": {
+                "name": "Expert OHADA",
+                "expertise": "comptabilité et normes SYSCOHADA",
+                "region": "zone OHADA (Afrique)",
+                "language": "fr",
+                "tone": "professionnel"
             }
         }
     
@@ -258,3 +265,28 @@ class LLMConfig:
         
         # Fallback sur OpenAI
         return "openai", "gpt-3.5-turbo-0125", {"api_key_env": "OPENAI_API_KEY"}
+    
+    def get_assistant_personality(self) -> Dict[str, Any]:
+        """
+        Retourne la configuration de personnalité de l'assistant
+        
+        Returns:
+            Configuration de personnalité
+        """
+        # Récupérer la configuration de personnalité ou utiliser les valeurs par défaut
+        default_personality = {
+            "name": "Expert OHADA",
+            "expertise": "comptabilité et normes SYSCOHADA",
+            "region": "zone OHADA (Afrique)",
+            "language": "fr",
+            "tone": "professionnel"
+        }
+        
+        personality = self.config.get("assistant_personality", default_personality)
+        
+        # S'assurer que toutes les clés nécessaires sont présentes
+        for key, value in default_personality.items():
+            if key not in personality:
+                personality[key] = value
+        
+        return personality

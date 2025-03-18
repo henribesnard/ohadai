@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, AsyncGenerator
+from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple
 import asyncio
 import uvicorn
 import uuid
@@ -26,6 +26,7 @@ from src.utils.ohada_streaming import StreamingLLMClient, generate_streaming_res
 from src.db.db_manager import DatabaseManager
 from src.auth.auth_manager import create_auth_dependency
 from src.auth.jwt_manager import JWTManager
+from src.generation.intent_classifier import LLMIntentAnalyzer
 
 # Import des routeurs
 from src.api.conversations_api import router as conversations_router
@@ -116,6 +117,43 @@ def authenticate_via_token(token: str) -> Optional[Dict[str, Any]]:
         logger.error(f"Erreur lors de l'authentification via token: {e}")
         return None
 
+# Fonction pour analyser l'intention d'une requête
+def analyze_intent(query: str) -> Tuple[str, Dict[str, Any], Optional[str]]:
+    """
+    Analyse l'intention d'une requête et génère une réponse directe si nécessaire
+    
+    Args:
+        query: Requête de l'utilisateur
+    
+    Returns:
+        Tuple (intention, métadonnées, réponse directe ou None)
+    """
+    # Récupérer le retriever et le config
+    retriever = get_retriever()
+    llm_config = retriever.llm_config
+    
+    # Récupérer la configuration de l'assistant
+    assistant_config = llm_config.config.get("assistant_personality", {
+        "name": "Expert OHADA",
+        "expertise": "comptabilité et normes SYSCOHADA",
+        "region": "zone OHADA (Afrique)"
+    })
+    
+    # Initialiser l'analyseur d'intention
+    intent_analyzer = LLMIntentAnalyzer(
+        llm_client=retriever.llm_client,
+        assistant_config=assistant_config
+    )
+    
+    # Analyser l'intention de la requête
+    intent, metadata = intent_analyzer.analyze_intent(query)
+    logger.info(f"Intention détectée: {intent} (confidence: {metadata.get('confidence', 0)})")
+    
+    # Générer une réponse directe si nécessaire
+    direct_response = intent_analyzer.generate_response(intent, metadata)
+    
+    return intent, metadata, direct_response
+
 #######################
 # INCLUSION DES ROUTERS
 #######################
@@ -170,16 +208,30 @@ async def query_endpoint(
     start_time = time.time()
     
     try:
-        # Exécuter la recherche
-        logger.info(f"Requête reçue: {request.query}")
+        # Analyser l'intention pour déterminer si c'est une requête conversationnelle
+        intent, metadata, direct_response = analyze_intent(request.query)
         
-        result = retriever.search_ohada_knowledge(
-            query=request.query,
-            partie=request.partie,
-            chapitre=request.chapitre,
-            n_results=request.n_results,
-            include_sources=request.include_sources
-        )
+        # Si une réponse directe est disponible, l'utiliser sans passer par la recherche
+        if direct_response:
+            logger.info(f"Réponse directe générée pour l'intention: {intent}")
+            result = {
+                "answer": direct_response,
+                "performance": {
+                    "intent_analysis_time_seconds": time.time() - start_time,
+                    "total_time_seconds": time.time() - start_time
+                }
+            }
+        else:
+            # Exécuter la recherche pour les requêtes techniques
+            logger.info(f"Requête technique reçue: {request.query}")
+            
+            result = retriever.search_ohada_knowledge(
+                query=request.query,
+                partie=request.partie,
+                chapitre=request.chapitre,
+                n_results=request.n_results,
+                include_sources=request.include_sources
+            )
         
         # Ajouter un ID unique et horodatage
         query_id = str(uuid.uuid4())
@@ -205,15 +257,22 @@ async def query_endpoint(
                     is_user=True
                 )
                 
+                # Ajouter les métadonnées d'intention si disponibles
+                metadata_to_save = {
+                    "performance": result.get("performance", {}),
+                    "sources": result.get("sources", [])
+                }
+                
+                if intent != "technical":
+                    metadata_to_save["intent"] = intent
+                    metadata_to_save["intent_metadata"] = metadata
+                
                 ia_message_id = db_manager.add_message(
                     conversation_id=conversation_id,
                     user_id=current_user["user_id"],
                     content=result["answer"],
                     is_user=False,
-                    metadata={
-                        "performance": result.get("performance", {}),
-                        "sources": result.get("sources", [])
-                    }
+                    metadata=metadata_to_save
                 )
                 
                 # Mettre à jour la date de mise à jour de la conversation
@@ -229,7 +288,7 @@ async def query_endpoint(
             save_query_history,
             request.query,
             result["answer"],
-            {"performance": result.get("performance", {})}
+            {"performance": result.get("performance", {}), "intent": intent if intent != "technical" else None}
         )
         
         logger.info(f"Requête traitée en {time.time() - start_time:.2f} secondes")
@@ -248,6 +307,7 @@ async def stream_response(
     # Générer un ID unique pour cette requête
     query_id = str(uuid.uuid4())
     ongoing_queries[query_id] = {"status": "processing", "completion": 0}
+    start_time = time.time()
     
     # Variables pour enregistrement dans la conversation
     conversation_id = request.save_to_conversation if current_user else None
@@ -285,6 +345,86 @@ async def stream_response(
     yield f"event: start\ndata: {json.dumps(start_data)}\n\n"
     
     try:
+        # Analyser l'intention pour déterminer si c'est une requête conversationnelle
+        yield f"event: progress\ndata: {json.dumps({'status': 'analyzing_intent', 'completion': 0.05})}\n\n"
+        
+        intent, metadata, direct_response = analyze_intent(request.query)
+        
+        # Si une réponse directe est disponible, l'envoyer progressivement
+        if direct_response:
+            yield f"event: progress\ndata: {json.dumps({'status': 'direct_response', 'completion': 0.5, 'intent': intent})}\n\n"
+            
+            # Diviser la réponse en chunks pour simuler un streaming
+            chunks = []
+            chunk_size = max(10, len(direct_response) // 20)  # Environ 20 chunks
+            
+            for i in range(0, len(direct_response), chunk_size):
+                chunk = direct_response[i:i+chunk_size]
+                chunks.append(chunk)
+                
+                # Envoyer le chunk au client
+                completion = 0.5 + (0.4 * (i / len(direct_response)))
+                yield f"event: chunk\ndata: {json.dumps({'text': chunk, 'completion': completion})}\n\n"
+                
+                # Petite pause pour simuler une génération naturelle
+                await asyncio.sleep(0.05)
+            
+            # Enregistrer la réponse dans la conversation si nécessaire
+            if current_user and conversation_id and user_message_id:
+                try:
+                    ia_message_id = db_manager.add_message(
+                        conversation_id=conversation_id,
+                        user_id=current_user["user_id"],
+                        content=direct_response,
+                        is_user=False,
+                        metadata={
+                            "intent": intent,
+                            "intent_metadata": metadata,
+                            "performance": {
+                                "intent_analysis_time_seconds": time.time() - start_time,
+                                "total_time_seconds": time.time() - start_time
+                            }
+                        }
+                    )
+                    # Mettre à jour la date de mise à jour de la conversation
+                    db_manager.update_conversation(conversation_id)
+                except Exception as e:
+                    logger.error(f"Erreur lors de l'enregistrement de la réponse dans la conversation: {e}")
+            
+            # Préparer la réponse finale
+            final_response = {
+                "id": query_id,
+                "query": request.query,
+                "answer": direct_response,
+                "sources": None,
+                "performance": {
+                    "intent_analysis_time_seconds": time.time() - start_time,
+                    "total_time_seconds": time.time() - start_time
+                },
+                "timestamp": time.time()
+            }
+            
+            # Ajouter les informations de conversation si disponibles
+            if conversation_id:
+                final_response["conversation_id"] = conversation_id
+                final_response["user_message_id"] = user_message_id
+                final_response["ia_message_id"] = ia_message_id
+            
+            # Événement de complétion
+            yield f"event: complete\ndata: {json.dumps(final_response)}\n\n"
+            
+            # Sauvegarder dans l'historique
+            save_query_history(
+                request.query,
+                direct_response,
+                {"intent": intent, "performance": final_response["performance"]}
+            )
+            
+            # Mettre à jour le statut de la requête
+            ongoing_queries[query_id] = {"status": "complete", "completion": 1.0}
+            return
+        
+        # Si c'est une requête technique, continuer avec le processus normal
         # Étape 1: Recherche des documents pertinents
         yield f"event: progress\ndata: {json.dumps({'status': 'retrieving', 'completion': 0.1})}\n\n"
         

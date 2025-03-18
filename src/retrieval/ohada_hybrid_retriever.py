@@ -263,6 +263,40 @@ class OhadaHybridRetriever:
         """
         start_time = time.time()
         
+        # NOUVELLE PARTIE: Analyse d'intention avec LLM
+        # Importer l'analyseur d'intention
+        from src.generation.intent_classifier import LLMIntentAnalyzer
+        
+        # Récupérer la configuration de l'assistant
+        assistant_config = self.llm_config.config.get("assistant_personality", {
+            "name": "Expert OHADA",
+            "expertise": "comptabilité et normes SYSCOHADA",
+            "region": "zone OHADA (Afrique)"
+        })
+        
+        # Initialiser l'analyseur d'intention
+        intent_analyzer = LLMIntentAnalyzer(
+            llm_client=self.llm_client,
+            assistant_config=assistant_config
+        )
+        
+        # Analyser l'intention de la requête
+        intent, metadata = intent_analyzer.analyze_intent(query)
+        logger.info(f"Intention détectée: {intent} (confidence: {metadata.get('confidence', 0)})")
+        
+        # Si ce n'est pas une demande technique, générer une réponse directe
+        direct_response = intent_analyzer.generate_response(intent, metadata)
+        if direct_response:
+            logger.info(f"Réponse directe générée pour l'intention: {intent}")
+            return {
+                "answer": direct_response,
+                "performance": {
+                    "intent_analysis_time_seconds": time.time() - start_time,
+                    "total_time_seconds": time.time() - start_time
+                }
+            }
+        
+        # PARTIE EXISTANTE: Pour les demandes techniques, continuer avec le processus normal
         # Étape 1: Reformulation de la requête (seulement pour les requêtes complexes)
         reformulation_start = time.time()
         reformulated_query = self.query_reformulator.reformulate(query)
@@ -330,6 +364,77 @@ class OhadaHybridRetriever:
         """
         start_time = time.time()
         
+        # NOUVELLE PARTIE: Analyse d'intention
+        if callback:
+            await callback("progress", {
+                "status": "analyzing_intent", 
+                "completion": 0.05
+            })
+            
+        # Importer l'analyseur d'intention
+        from src.generation.intent_classifier import LLMIntentAnalyzer
+        
+        # Récupérer la configuration de l'assistant
+        assistant_config = self.llm_config.config.get("assistant_personality", {
+            "name": "Expert OHADA",
+            "expertise": "comptabilité et normes SYSCOHADA",
+            "region": "zone OHADA (Afrique)"
+        })
+        
+        # Initialiser l'analyseur d'intention
+        intent_analyzer = LLMIntentAnalyzer(
+            llm_client=self.llm_client,
+            assistant_config=assistant_config
+        )
+        
+        # Analyser l'intention de la requête
+        intent, metadata = intent_analyzer.analyze_intent(query)
+        logger.info(f"Intention détectée (streaming): {intent}, confidence: {metadata.get('confidence', 0)}")
+        
+        # Si ce n'est pas une demande technique, générer une réponse directe
+        direct_response = intent_analyzer.generate_response(intent, metadata)
+        
+        if direct_response:
+            if callback:
+                await callback("progress", {
+                    "status": "direct_response",
+                    "completion": 0.5,
+                    "intent": intent
+                })
+                
+                # Simulation d'un streaming pour la réponse directe
+                # Diviser la réponse en morceaux pour un streaming progressif
+                import asyncio
+                from src.utils.ohada_streaming import StreamingLLMClient
+                
+                # Envoyer la réponse en morceaux
+                chunks = []
+                chunk_size = max(10, len(direct_response) // 20)  # Environ 20 chunks
+                
+                for i in range(0, len(direct_response), chunk_size):
+                    chunk = direct_response[i:i+chunk_size]
+                    chunks.append(chunk)
+                    
+                    # Envoyer le chunk au client
+                    await callback("chunk", {
+                        "text": chunk,
+                        "completion": 0.5 + (0.4 * (i / len(direct_response)))
+                    })
+                    
+                    # Petite pause pour simuler une génération naturelle
+                    await asyncio.sleep(0.05)
+            
+            # Réponse complète pour retour
+            return {
+                "answer": direct_response,
+                "sources": None,
+                "performance": {
+                    "intent_analysis_time_seconds": time.time() - start_time,
+                    "total_time_seconds": time.time() - start_time
+                }
+            }
+        
+        # Si c'est une demande technique, continuer avec le processus normal
         # Étape 1: Reformulation de la requête
         reformulation_start = time.time()
         reformulated_query = self.query_reformulator.reformulate(query)
@@ -442,8 +547,8 @@ if __name__ == "__main__":
     )
     
     # Afficher les performances
-    print(f"\nRecherche effectuée en {result['performance']['search_time_seconds']:.2f} secondes")
-    print(f"Réponse générée en {result['performance']['generation_time_seconds']:.2f} secondes")
+    print(f"\nRecherche effectuée en {result['performance'].get('search_time_seconds', 0):.2f} secondes")
+    print(f"Réponse générée en {result['performance'].get('generation_time_seconds', 0):.2f} secondes")
     print(f"Temps total: {result['performance']['total_time_seconds']:.2f} secondes")
     
     # Afficher la réponse
