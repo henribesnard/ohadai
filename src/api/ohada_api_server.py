@@ -73,6 +73,7 @@ class QueryRequest(BaseModel):
     include_sources: bool = True
     stream: bool = False
     save_to_conversation: Optional[str] = None  # ID de conversation optionnel pour sauvegarder la requête
+    create_conversation: bool = True  # Nouveau paramètre pour contrôler la création automatique de conversation
 
 class QueryResponse(BaseModel):
     id: str
@@ -116,6 +117,31 @@ def authenticate_via_token(token: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Erreur lors de l'authentification via token: {e}")
         return None
+
+# Fonction pour créer ou vérifier une conversation
+def ensure_conversation(user_id: str, conversation_id: Optional[str], query: str) -> Tuple[str, bool]:
+    """
+    Vérifie qu'une conversation existe et appartient à l'utilisateur, ou en crée une nouvelle
+    
+    Args:
+        user_id: ID de l'utilisateur
+        conversation_id: ID de conversation (optionnel)
+        query: Requête pour générer un titre si nécessaire
+        
+    Returns:
+        Tuple (conversation_id, created_new) où created_new est True si une nouvelle conversation a été créée
+    """
+    # Si un ID de conversation est fourni, vérifier qu'il existe et appartient à l'utilisateur
+    if conversation_id:
+        conversation = db_manager.get_conversation(conversation_id)
+        if conversation and conversation["user_id"] == user_id:
+            return conversation_id, False
+    
+    # Créer une nouvelle conversation
+    title = query[:50] + "..." if len(query) > 50 else query
+    new_conversation_id = db_manager.create_conversation(user_id=user_id, title=title)
+    logger.info(f"Nouvelle conversation créée pour l'utilisateur {user_id}: {new_conversation_id}")
+    return new_conversation_id, True
 
 # Fonction pour analyser l'intention d'une requête
 def analyze_intent(query: str) -> Tuple[str, Dict[str, Any], Optional[str]]:
@@ -208,6 +234,20 @@ async def query_endpoint(
     start_time = time.time()
     
     try:
+        # Gérer la conversation - S'assurer qu'une conversation existe si l'utilisateur est authentifié
+        conversation_id = request.save_to_conversation
+        user_message_id = None
+        ia_message_id = None
+        
+        if current_user and request.create_conversation:
+            # Créer ou vérifier une conversation
+            conversation_id, is_new = ensure_conversation(
+                user_id=current_user["user_id"],
+                conversation_id=conversation_id,
+                query=request.query
+            )
+            request.save_to_conversation = conversation_id  # Mettre à jour l'ID de conversation
+
         # Analyser l'intention pour déterminer si c'est une requête conversationnelle
         intent, metadata, direct_response = analyze_intent(request.query)
         
@@ -239,49 +279,42 @@ async def query_endpoint(
         result["query"] = request.query
         result["timestamp"] = time.time()
         
-        # Si l'utilisateur est authentifié et a spécifié une conversation, enregistrer dans la conversation
-        user_message_id = None
-        ia_message_id = None
-        
-        if current_user and request.save_to_conversation:
-            conversation_id = request.save_to_conversation
-            # Vérifier si la conversation existe et appartient à l'utilisateur
-            conversation = db_manager.get_conversation(conversation_id)
+        # Si l'utilisateur est authentifié et que nous avons une conversation, enregistrer le message
+        if current_user and conversation_id:
+            # Ajouter la question à la conversation
+            user_message_id = db_manager.add_message(
+                conversation_id=conversation_id,
+                user_id=current_user["user_id"],
+                content=request.query,
+                is_user=True
+            )
             
-            if conversation and conversation["user_id"] == current_user["user_id"]:
-                # Ajouter la question et la réponse à la conversation
-                user_message_id = db_manager.add_message(
-                    conversation_id=conversation_id,
-                    user_id=current_user["user_id"],
-                    content=request.query,
-                    is_user=True
-                )
-                
-                # Ajouter les métadonnées d'intention si disponibles
-                metadata_to_save = {
-                    "performance": result.get("performance", {}),
-                    "sources": result.get("sources", [])
-                }
-                
-                if intent != "technical":
-                    metadata_to_save["intent"] = intent
-                    metadata_to_save["intent_metadata"] = metadata
-                
-                ia_message_id = db_manager.add_message(
-                    conversation_id=conversation_id,
-                    user_id=current_user["user_id"],
-                    content=result["answer"],
-                    is_user=False,
-                    metadata=metadata_to_save
-                )
-                
-                # Mettre à jour la date de mise à jour de la conversation
-                db_manager.update_conversation(conversation_id)
-                
-                # Ajouter les IDs à la réponse
-                result["conversation_id"] = conversation_id
-                result["user_message_id"] = user_message_id
-                result["ia_message_id"] = ia_message_id
+            # Ajouter les métadonnées d'intention si disponibles
+            metadata_to_save = {
+                "performance": result.get("performance", {}),
+                "sources": result.get("sources", [])
+            }
+            
+            if intent != "technical":
+                metadata_to_save["intent"] = intent
+                metadata_to_save["intent_metadata"] = metadata
+            
+            # Ajouter la réponse à la conversation
+            ia_message_id = db_manager.add_message(
+                conversation_id=conversation_id,
+                user_id=current_user["user_id"],
+                content=result["answer"],
+                is_user=False,
+                metadata=metadata_to_save
+            )
+            
+            # Mettre à jour la date de mise à jour de la conversation
+            db_manager.update_conversation(conversation_id)
+            
+            # Ajouter les IDs à la réponse
+            result["conversation_id"] = conversation_id
+            result["user_message_id"] = user_message_id
+            result["ia_message_id"] = ia_message_id
         
         # Sauvegarder dans l'historique de manière asynchrone (pour rétrocompatibilité)
         background_tasks.add_task(
@@ -310,27 +343,32 @@ async def stream_response(
     start_time = time.time()
     
     # Variables pour enregistrement dans la conversation
-    conversation_id = request.save_to_conversation if current_user else None
+    conversation_id = request.save_to_conversation
     user_message_id = None
     ia_message_id = None
     
-    # Vérifier si la conversation existe et appartient à l'utilisateur
-    if current_user and conversation_id:
+    # Gérer la conversation si l'utilisateur est authentifié
+    if current_user and request.create_conversation:
         try:
-            conversation = db_manager.get_conversation(conversation_id)
-            if not conversation or conversation["user_id"] != current_user["user_id"]:
-                conversation_id = None  # Ignorer si la conversation n'existe pas ou n'appartient pas à l'utilisateur
-            else:
-                # Ajouter la question à la conversation
-                user_message_id = db_manager.add_message(
-                    conversation_id=conversation_id,
-                    user_id=current_user["user_id"],
-                    content=request.query,
-                    is_user=True
-                )
+            # Créer ou vérifier une conversation
+            conversation_id, is_new = ensure_conversation(
+                user_id=current_user["user_id"],
+                conversation_id=conversation_id,
+                query=request.query
+            )
+            
+            # Ajouter la question à la conversation
+            user_message_id = db_manager.add_message(
+                conversation_id=conversation_id,
+                user_id=current_user["user_id"],
+                content=request.query,
+                is_user=True
+            )
+            logger.info(f"Message utilisateur ajouté à la conversation {conversation_id}: {user_message_id}")
         except Exception as e:
-            logger.error(f"Erreur lors de la vérification de la conversation: {e}")
+            logger.error(f"Erreur lors de la gestion de la conversation: {e}")
             conversation_id = None
+            user_message_id = None
     
     # Événement de début avec ID et métadonnées
     start_data = {
@@ -581,6 +619,7 @@ async def stream_endpoint(
     n_results: int = Query(5, ge=1, le=20, description="Nombre de résultats à considérer"),
     include_sources: bool = Query(True, description="Inclure les sources dans la réponse"),
     save_to_conversation: Optional[str] = Query(None, description="ID de conversation à utiliser"),
+    create_conversation: bool = Query(True, description="Créer automatiquement une conversation"),
     _token: Optional[str] = Query(None, description="Token JWT pour authentification via paramètre"),
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
 ):
@@ -598,7 +637,8 @@ async def stream_endpoint(
         n_results=n_results,
         include_sources=include_sources,
         stream=True,
-        save_to_conversation=save_to_conversation
+        save_to_conversation=save_to_conversation,
+        create_conversation=create_conversation
     )
     
     retriever = get_retriever()
