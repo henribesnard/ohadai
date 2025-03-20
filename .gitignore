@@ -28,6 +28,7 @@ wheels/
 
 # Données et fichiers générés
 data/
+base_connaissances/
 *.log
 logs/
 temp/
