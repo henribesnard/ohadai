@@ -404,10 +404,10 @@ def build_toc_from_docx(docx_dir: str, toc_file: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ingesteur de Word pour le plan comptable OHADA")
-    parser.add_argument("--docx-dir", default="./plan_comptable/chapitres_word", 
+    parser.add_argument("--docx-dir", default="./base_connaissances/plan_comptable/chapitres_word", 
                       help="Répertoire contenant les fichiers Word (défaut: ./plan_comptable/chapitres_word)")
-    parser.add_argument("--toc-file", default="./plan_comptable/ohada_toc.json", 
-                      help="Fichier de table des matières (défaut: ./plan_comptable/ohada_toc.json)")
+    parser.add_argument("--toc-file", default="./base_connaissances/plan_comptable/ohada_toc.json", 
+                      help="Fichier de table des matières (défaut: ./base_connaissances/plan_comptable/ohada_toc.json)")
     parser.add_argument("--build-toc", action="store_true", 
                       help="Construire la table des matières")
     parser.add_argument("--reset", action="store_true", 
