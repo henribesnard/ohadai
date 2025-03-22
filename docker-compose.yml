@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  ohada-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_LOCAL_MODELS: 'true'  # Mettre à 'true' pour installer les modèles locaux
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data  # Pour persister les données
+      - ./src/config:/app/src/config  # Pour pouvoir modifier la configuration sans reconstruire l'image
+    environment:
+      - OHADA_ENV=${OHADA_ENV:-production}
+      - HOST=0.0.0.0
+      - PORT=8000
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-${RANDOM}${RANDOM}${RANDOM}}
+      - ADMIN_EMAILS=${ADMIN_EMAILS:-admin@example.com}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

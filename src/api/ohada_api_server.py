@@ -1,22 +1,24 @@
 """
 Serveur API FastAPI pour le système OHADA Expert-Comptable.
-Version étendue avec gestion des utilisateurs et conversations.
+Version optimisée pour les environnements de production et test.
 """
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, Depends, Path, Body
+import os
+import asyncio
+import time
+import json
+import logging
+import uuid
+from typing import List, Dict, Any, Optional, Tuple, AsyncGenerator
+from pathlib import Path
+from datetime import datetime
+
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, Depends, Path as PathParam, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple
-import asyncio
 import uvicorn
-import uuid
-import time
-import json
-import logging
-import os
-from datetime import datetime
 
 # Import des modules OHADA
 from src.config.ohada_config import LLMConfig
@@ -32,34 +34,48 @@ from src.generation.intent_classifier import LLMIntentAnalyzer
 from src.api.conversations_api import router as conversations_router
 from src.api.auth_routes import router as auth_router
 
+# Déterminer l'environnement
+ENVIRONMENT = os.getenv("OHADA_ENV", "test")
+CONFIG_PATH = os.getenv("OHADA_CONFIG_PATH", "./src/config")
+
 # Configuration du logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.INFO if ENVIRONMENT == "production" else logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(f"ohada_api_{ENVIRONMENT}.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger("ohada_api")
+
+logger.info(f"Démarrage du serveur API en environnement: {ENVIRONMENT}")
+logger.info(f"Utilisation du chemin de configuration: {CONFIG_PATH}")
 
 # Initialisation de l'API
 app = FastAPI(
     title="OHADA Expert-Comptable API",
     description="API pour l'assistant d'expertise comptable OHADA avec authentification interne",
-    version="1.2.0"
+    version="1.3.0"
 )
 
 # Configuration CORS pour permettre les requêtes cross-origin
+origins = os.getenv("CORS_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # À restreindre en production
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Initialisation du gestionnaire de base de données
-db_manager = DatabaseManager()
+DB_PATH = os.getenv("OHADA_DB_PATH", "./data/ohada_users.db")
+db_manager = DatabaseManager(db_path=DB_PATH)
 
 # Initialisation du gestionnaire JWT
-jwt_manager = JWTManager(db_manager)
+JWT_SECRET = os.getenv("JWT_SECRET_KEY")
+jwt_manager = JWTManager(db_manager, secret_key=JWT_SECRET)
 
 # Création de la dépendance d'authentification
 get_current_user = create_auth_dependency(db_manager)
@@ -94,7 +110,7 @@ def get_retriever():
     """Obtient ou crée l'instance de OhadaHybridRetriever"""
     if not hasattr(app, "retriever"):
         logger.info("Initialisation du retriever API")
-        app.retriever = create_ohada_query_api()
+        app.retriever = create_ohada_query_api(config_path=CONFIG_PATH)
     return app.retriever
 
 # Fonction pour authentifier via token (pour les endpoints SSE)
@@ -159,11 +175,7 @@ def analyze_intent(query: str) -> Tuple[str, Dict[str, Any], Optional[str]]:
     llm_config = retriever.llm_config
     
     # Récupérer la configuration de l'assistant
-    assistant_config = llm_config.config.get("assistant_personality", {
-        "name": "Expert OHADA",
-        "expertise": "comptabilité et normes SYSCOHADA",
-        "region": "zone OHADA (Afrique)"
-    })
+    assistant_config = llm_config.get_assistant_personality()
     
     # Initialiser l'analyseur d'intention
     intent_analyzer = LLMIntentAnalyzer(
@@ -174,6 +186,9 @@ def analyze_intent(query: str) -> Tuple[str, Dict[str, Any], Optional[str]]:
     # Analyser l'intention de la requête
     intent, metadata = intent_analyzer.analyze_intent(query)
     logger.info(f"Intention détectée: {intent} (confidence: {metadata.get('confidence', 0)})")
+    
+    # Enrichir les métadonnées avec la requête originale pour référence future
+    metadata["query"] = query
     
     # Générer une réponse directe si nécessaire
     direct_response = intent_analyzer.generate_response(intent, metadata)
@@ -200,7 +215,8 @@ def read_root():
     return {
         "status": "online",
         "service": "OHADA Expert-Comptable API",
-        "version": "1.2.0",
+        "version": "1.3.0",
+        "environment": ENVIRONMENT,
         "endpoints": {
             "query": "/query - Point d'entrée principal pour interroger l'assistant",
             "stream": "/stream - Point d'entrée pour les requêtes avec streaming",
@@ -209,6 +225,62 @@ def read_root():
             "conversations": "/conversations/* - Points d'entrée pour la gestion des conversations"
         }
     }
+
+@app.get("/status")
+def status_endpoint():
+    """Endpoint pour vérifier l'état du service"""
+    # Vérifier que les bases vectorielles sont chargées
+    retriever = get_retriever()
+    
+    stats = {
+        "status": "online",
+        "environment": ENVIRONMENT,
+        "timestamp": datetime.now().isoformat(),
+        "databases": {},
+        "models": {}
+    }
+    
+    # Obtenir les statistiques des collections
+    try:
+        vector_stats = retriever.vector_db.get_collection_stats()
+        stats["databases"]["vector_db"] = {
+            "status": "online",
+            "collections": {
+                name: data.get("count", 0) for name, data in vector_stats.items() 
+                if "error" not in data
+            }
+        }
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des statistiques vectorielles: {e}")
+        stats["databases"]["vector_db"] = {"status": "error", "message": str(e)}
+    
+    # Obtenir les informations sur les modèles utilisés
+    try:
+        provider_name, model_name, _ = retriever.llm_config.get_response_model()
+        embedding_provider, embedding_model, _ = retriever.llm_config.get_embedding_model()
+        
+        stats["models"]["llm"] = {
+            "provider": provider_name,
+            "model": model_name
+        }
+        
+        stats["models"]["embedding"] = {
+            "provider": embedding_provider,
+            "model": embedding_model
+        }
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des informations sur les modèles: {e}")
+        stats["models"] = {"status": "error", "message": str(e)}
+    
+    # Obtenir les statistiques de base de données relationnelle
+    try:
+        db_stats = db_manager.get_statistics()
+        stats["databases"]["sql"] = {"status": "online", **db_stats}
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des statistiques de base de données: {e}")
+        stats["databases"]["sql"] = {"status": "error", "message": str(e)}
+    
+    return stats
 
 #######################
 # ROUTES OHADA QUERY
@@ -263,7 +335,7 @@ async def query_endpoint(
             }
         else:
             # Exécuter la recherche pour les requêtes techniques
-            logger.info(f"Requête technique reçue: {request.query}")
+            logger.info(f"Requête technique reçue: {request.query[:50]}")
             
             result = retriever.search_ohada_knowledge(
                 query=request.query,
@@ -699,6 +771,24 @@ async def get_db_stats(current_user: Dict[str, Any] = Depends(get_current_user))
         
         # Ajouter des métriques supplémentaires
         stats["active_queries"] = len(ongoing_queries)
+        
+        # Ajouter les statistiques de la base vectorielle
+        try:
+            retriever = get_retriever()
+            vector_stats = retriever.vector_db.get_collection_stats()
+            stats["vector_db"] = {
+                name: {"count": data.get("count", 0)} for name, data in vector_stats.items()
+                if "error" not in data
+            }
+        except Exception as e:
+            logger.error(f"Erreur lors de la récupération des statistiques vectorielles: {e}")
+            stats["vector_db"] = {"error": str(e)}
+            
+        # Ajouter les informations sur l'environnement
+        stats["environment"] = ENVIRONMENT
+        stats["config_path"] = CONFIG_PATH
+        stats["database_path"] = DB_PATH
+        
         return stats
     except HTTPException:
         raise
@@ -731,10 +821,180 @@ async def cleanup_database(current_user: Dict[str, Any] = Depends(get_current_us
         logger.error(f"Erreur lors du nettoyage de la base de données: {e}")
         raise HTTPException(status_code=500, detail="Erreur lors du nettoyage de la base de données")
 
+@app.get("/admin/models")
+async def get_model_info(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """
+    Récupère des informations sur les modèles utilisés
+    """
+    try:
+        # Vérifier si l'utilisateur est admin
+        admin_emails = os.getenv("ADMIN_EMAILS", "").split(",")
+        if current_user["email"] not in admin_emails:
+            raise HTTPException(status_code=403, detail="Accès non autorisé")
+        
+        # Récupérer les informations sur les modèles
+        retriever = get_retriever()
+        llm_config = retriever.llm_config
+        
+        # Obtenir les informations sur les modèles configurés
+        provider_list = llm_config.get_provider_list()
+        embedding_provider_list = llm_config.get_embedding_provider_list()
+        
+        provider_name, model_name, params = llm_config.get_response_model()
+        embedding_provider, embedding_model, embedding_params = llm_config.get_embedding_model()
+        
+        # Informations sur l'environnement
+        environment_info = {
+            "environment": ENVIRONMENT,
+            "config_path": CONFIG_PATH
+        }
+        
+        # Informations sur les modèles
+        models_info = {
+            "active_llm": {
+                "provider": provider_name,
+                "model": model_name
+            },
+            "active_embedding": {
+                "provider": embedding_provider,
+                "model": embedding_model,
+                "dimensions": embedding_params.get("dimensions", "unknown")
+            },
+            "provider_priority": provider_list,
+            "embedding_provider_priority": embedding_provider_list,
+            "provider_configs": {}
+        }
+        
+        # Ajouter des informations sur chaque fournisseur configuré
+        for provider in provider_list:
+            provider_config = llm_config.get_provider_config(provider)
+            if provider_config:
+                models_info["provider_configs"][provider] = {
+                    "models": provider_config.get("models", {}),
+                    "base_url": provider_config.get("base_url", "default"),
+                    "local": provider_config.get("parameters", {}).get("local", False)
+                }
+        
+        return {
+            "environment": environment_info,
+            "models": models_info
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des informations sur les modèles: {e}")
+        raise HTTPException(status_code=500, detail="Erreur lors de la récupération des informations sur les modèles")
+
+#######################
+# OUTILS DE TEST
+#######################
+
+@app.post("/test/intent")
+async def test_intent(
+    query: str = Body(..., embed=True),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    Endpoint pour tester l'analyse d'intention
+    """
+    try:
+        intent, metadata, direct_response = analyze_intent(query)
+        
+        return {
+            "query": query,
+            "intent": intent,
+            "confidence": metadata.get("confidence", 0),
+            "subcategory": metadata.get("subcategory", ""),
+            "needs_knowledge_base": metadata.get("needs_knowledge_base", True),
+            "has_direct_response": direct_response is not None,
+            "direct_response_preview": direct_response[:100] + "..." if direct_response else None,
+            "explanation": metadata.get("explanation", "")
+        }
+    except Exception as e:
+        logger.error(f"Erreur lors du test d'intention: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/test/search")
+async def test_search(
+    query: str = Body(...),
+    n_results: int = Body(3, ge=1, le=10),
+    partie: Optional[int] = Body(None),
+    chapitre: Optional[int] = Body(None),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    Endpoint pour tester la recherche seule
+    """
+    try:
+        retriever = get_retriever()
+        start_time = time.time()
+        
+        # Exécuter la recherche
+        search_results = retriever.search_only(
+            query=query,
+            partie=partie,
+            chapitre=chapitre,
+            n_results=n_results
+        )
+        
+        # Formatage des résultats pour l'affichage
+        results = []
+        for i, result in enumerate(search_results):
+            # Extraire les métadonnées essentielles
+            metadata_display = {
+                "title": result["metadata"].get("title", ""),
+                "partie": result["metadata"].get("partie", ""),
+                "chapitre": result["metadata"].get("chapitre", ""),
+                "document_type": result["metadata"].get("document_type", "")
+            }
+            
+            # Tronquer le texte pour l'affichage
+            text_preview = result["text"]
+            if len(text_preview) > 300:
+                text_preview = text_preview[:300] + "..."
+                
+            results.append({
+                "position": i + 1,
+                "document_id": result["document_id"],
+                "metadata": metadata_display,
+                "relevance_score": result["relevance_score"],
+                "text_preview": text_preview
+            })
+        
+        return {
+            "query": query,
+            "results_count": len(search_results),
+            "search_time_seconds": time.time() - start_time,
+            "results": results
+        }
+    except Exception as e:
+        logger.error(f"Erreur lors du test de recherche: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 #######################
 # LANCEMENT DU SERVEUR
 #######################
 
+def start():
+    """Démarre le serveur FastAPI avec Uvicorn"""
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8000"))
+    reload = os.getenv("RELOAD", "false").lower() == "true"
+    
+    # Log des informations de démarrage
+    logger.info(f"Démarrage du serveur API OHADA sur {host}:{port}")
+    logger.info(f"Environnement: {ENVIRONMENT}")
+    logger.info(f"Rechargement automatique: {reload}")
+    
+    # Démarrer le serveur
+    uvicorn.run(
+        "src.api.ohada_api_server:app",
+        host=host,
+        port=port,
+        reload=reload,
+        log_level="info"
+    )
+
 if __name__ == "__main__":
     # Lancer le serveur avec uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    start()

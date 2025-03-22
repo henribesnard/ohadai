@@ -1,6 +1,6 @@
 """
 Main entry point for the OHADA Expert Accounting system.
-Version optimisée avec configuration flexible des modèles de langage.
+Version optimisée avec configuration flexible des modèles de langage et gestion de l'environnement.
 """
 
 import os
@@ -17,35 +17,56 @@ from typing import Dict, Any, Optional, List
 # Load environment variables
 load_dotenv()
 
+# Déterminer l'environnement et le chemin de configuration
+ENVIRONMENT = os.getenv("OHADA_ENV", "test")
+CONFIG_PATH = os.getenv("OHADA_CONFIG_PATH", "./src/config")
+CONFIG_FILE = os.path.join(CONFIG_PATH, f"llm_config_{ENVIRONMENT}.yaml")
+
 # Configuration du logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.INFO if ENVIRONMENT == "production" else logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("ohada_main.log"),
+        logging.FileHandler(f"ohada_main_{ENVIRONMENT}.log"),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger("ohada_main")
 
 # Constantes
-CONFIG_FILE = "./src/config/llm_config.yaml"
 DEFAULT_TIMEOUT = 180  # Secondes
 
 def load_llm_config():
     """Charge la configuration des modèles de langage depuis le fichier YAML"""
     try:
+        logger.info(f"Chargement de la configuration depuis {CONFIG_FILE}")
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         return config
     except Exception as e:
         logger.error(f"Erreur lors du chargement de la configuration: {e}")
+        # Essayer avec le chemin par défaut si le fichier n'est pas trouvé
+        default_config = f"./src/config/llm_config.yaml"
+        if os.path.exists(default_config):
+            logger.info(f"Tentative avec le fichier par défaut: {default_config}")
+            try:
+                with open(default_config, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
+                return config
+            except Exception as e2:
+                logger.error(f"Erreur lors du chargement de la configuration par défaut: {e2}")
         return None
 
 def print_welcome():
     """Affiche le message de bienvenue et les instructions"""
+    # Logo différent selon l'environnement
+    if ENVIRONMENT == "production":
+        env_indicator = "💼 [PRODUCTION]"
+    else:
+        env_indicator = "🧪 [TEST]"
+        
     print("\n" + "=" * 80)
-    print("                      OHADA EXPERT-COMPTABLE AI".center(80))
+    print(f"                  OHADA EXPERT-COMPTABLE AI {env_indicator}".center(80))
     print("=" * 80)
     print("\nBienvenue dans votre assistant d'expertise comptable OHADA!")
     print("Posez des questions sur le plan comptable, les normes et règlements OHADA.")
@@ -71,7 +92,7 @@ def process_query_with_extended_timeout(query: str, api=None, max_wait_time: int
     # Import nécessaire seulement quand nécessaire (pour un démarrage plus rapide)
     try:
         # Import du module de requête
-        from src.api.ohada_api import create_ohada_query_api
+        from src.retrieval.ohada_hybrid_retriever import create_ohada_query_api
     except ImportError as e:
         logger.error(f"Erreur lors de l'importation des modules: {e}")
         return {
@@ -103,9 +124,32 @@ def process_query_with_extended_timeout(query: str, api=None, max_wait_time: int
             nonlocal api
             if api is None:
                 logger.info("Création d'une nouvelle instance d'API")
-                api = create_ohada_query_api(config_path=CONFIG_FILE)
+                api = create_ohada_query_api(config_path=CONFIG_PATH)
             
-            # Exécuter la recherche
+            # Analyser l'intention pour déterminer si c'est une requête conversationnelle
+            from src.generation.intent_classifier import LLMIntentAnalyzer
+            
+            # Initialiser l'analyseur d'intention
+            intent_analyzer = LLMIntentAnalyzer(
+                llm_client=api.llm_client,
+                assistant_config=api.llm_config.get_assistant_personality()
+            )
+            
+            # Analyser l'intention de la requête
+            intent, metadata, direct_response = analyze_intent(query, intent_analyzer)
+            
+            # Si une réponse directe est disponible, l'utiliser
+            if direct_response:
+                logger.info(f"Réponse directe générée pour l'intention: {intent}")
+                result["response"] = direct_response
+                result["intent"] = intent
+                result["intent_analysis"] = True
+                result["elapsed_time"] = time.time() - start_time
+                result["success"] = True
+                result["done"] = True
+                return
+            
+            # Sinon, exécuter la recherche de connaissances normalement
             query_result = api.search_ohada_knowledge(
                 query=query,
                 n_results=3,
@@ -221,6 +265,28 @@ def process_query_with_extended_timeout(query: str, api=None, max_wait_time: int
     
     return result
 
+def analyze_intent(query: str, intent_analyzer):
+    """
+    Analyse l'intention d'une requête et génère une réponse directe si nécessaire
+    
+    Args:
+        query: Requête de l'utilisateur
+        intent_analyzer: Analyseur d'intention
+    
+    Returns:
+        Tuple (intention, métadonnées, réponse directe ou None)
+    """
+    # Analyser l'intention de la requête
+    intent, metadata = intent_analyzer.analyze_intent(query)
+    
+    # Enrichir les métadonnées avec la requête originale pour référence future
+    metadata["query"] = query
+    
+    # Générer une réponse directe si nécessaire
+    direct_response = intent_analyzer.generate_response(intent, metadata)
+    
+    return intent, metadata, direct_response
+
 def generate_fallback_response(query: str) -> str:
     """
     Génère une réponse de secours lorsque le processus principal est annulé ou expire.
@@ -238,7 +304,7 @@ def generate_fallback_response(query: str) -> str:
         from src.utils.ohada_clients import LLMClient
         
         # Charger la configuration des modèles
-        llm_config = LLMConfig(CONFIG_FILE)
+        llm_config = LLMConfig(CONFIG_PATH)
         
         # Initialiser le client LLM
         llm_client = LLMClient(llm_config)
@@ -335,7 +401,7 @@ def check_environment() -> bool:
     embedding_available = any(providers_status.get(p, False) for p in embedding_providers)
     
     # Afficher les informations sur les fournisseurs disponibles
-    print("\n=== Configuration des modèles ===")
+    print(f"\n=== Configuration des modèles ({ENVIRONMENT}) ===")
     print("Fournisseurs pour les réponses:")
     for p in response_providers:
         status = "✅ Disponible" if providers_status.get(p, False) else "❌ Non disponible"
@@ -358,7 +424,7 @@ def check_environment() -> bool:
 
 def main():
     """Fonction principale pour exécuter le système OHADA Expert Accounting"""
-    print("\nInitialisation de l'Assistant Expert-Comptable OHADA...")
+    print(f"\nInitialisation de l'Assistant Expert-Comptable OHADA ({ENVIRONMENT})...")
     
     # Vérifier les variables d'environnement et la configuration
     if not check_environment():
@@ -374,15 +440,17 @@ def main():
         print("Préchargement du modèle d'embedding (cela peut prendre un moment)...")
         from src.vector_db.ohada_vector_db_structure import OhadaEmbedder
         # Charger le modèle en utilisant le constructeur (qui va maintenant utiliser un singleton)
-        # Le modèle reste en mémoire pour être réutilisé lors des requêtes ultérieures
-        config = load_llm_config()
-        embedding_provider = config.get("default_embedding_provider", "local_embedding")
-        embedding_model = config.get("providers", {}).get(embedding_provider, {}).get("models", {}).get("embedding", "Alibaba-NLP/gte-Qwen2-1.5B-instruct")
         
+        # Déterminer le modèle à utiliser selon l'environnement
+        if ENVIRONMENT == "production":
+            embedding_model = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
+        else:
+            embedding_model = "all-MiniLM-L6-v2"
+            
         embedder = OhadaEmbedder(model_name=embedding_model)
         # Générer un petit embedding pour s'assurer que tout fonctionne
         _ = embedder.generate_embedding("Test de préchargement")
-        print("Modèle d'embedding préchargé avec succès.")
+        print(f"Modèle d'embedding {embedding_model} préchargé avec succès.")
     except Exception as e:
         logger.error(f"Erreur lors du préchargement du modèle d'embedding: {e}")
         print(f"⚠️ Avertissement: Le préchargement du modèle d'embedding a échoué: {str(e)}")
@@ -390,9 +458,9 @@ def main():
     
     # Créer l'instance d'API une seule fois (sera réutilisée)
     try:
-        from src.api.ohada_api import create_ohada_query_api
+        from src.retrieval.ohada_hybrid_retriever import create_ohada_query_api
         print("Initialisation de l'API de requête...")
-        api = create_ohada_query_api(config_path=CONFIG_FILE)
+        api = create_ohada_query_api(config_path=CONFIG_PATH)
         logger.info("API initialisée avec succès")
         print("API initialisée avec succès.\n")
     except Exception as e:
@@ -431,7 +499,13 @@ def main():
             
             # Afficher la réponse
             print("\n" + "-" * 80)
-            print(f"✅ Réponse (générée en {elapsed_time:.2f} secondes):")
+            
+            # Si c'est une réponse basée sur l'intention, afficher l'intention détectée
+            if result.get("intent_analysis", False):
+                print(f"✅ Réponse (générée en {elapsed_time:.2f} secondes, intention: {result.get('intent', 'inconnue')}):")
+            else:
+                print(f"✅ Réponse (générée en {elapsed_time:.2f} secondes):")
+                
             print("-" * 80 + "\n")
             print(response)
             print("\n" + "-" * 80)
