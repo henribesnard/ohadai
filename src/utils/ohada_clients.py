@@ -33,11 +33,23 @@ class LLMClient:
         # Initialiser l'embedder dès maintenant pour gagner du temps lors des requêtes
         # (utilisation du pattern Singleton dans OhadaEmbedder)
         try:
-            embedding_provider, embedding_model, _ = self.config.get_embedding_model()
+            # Détecter l'environnement
+            environment = os.getenv("OHADA_ENV", "test")
+            
+            # Choisir le modèle d'embedding en fonction de l'environnement
+            if environment == "production":
+                embedding_model = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
+                dimensions = 1536
+            else:
+                embedding_model = "all-MiniLM-L6-v2"
+                dimensions = 384
+            
+            embedding_provider, model_name, _ = self.config.get_embedding_model()
+            
             if embedding_provider == "local_embedding":
-                logger.info(f"Préchargement de l'embedder local {embedding_model}...")
+                logger.info(f"Préchargement de l'embedder local {embedding_model} (env: {environment})...")
                 self.local_embedder = OhadaEmbedder(model_name=embedding_model)
-                logger.info(f"Embedder local {embedding_model} préchargé avec succès")
+                logger.info(f"Embedder local {embedding_model} préchargé avec succès (dim: {dimensions})")
         except Exception as e:
             logger.error(f"Erreur lors du préchargement de l'embedder local: {e}")
             logger.info("L'embedder sera chargé à la demande")
@@ -118,6 +130,9 @@ class LLMClient:
         """
         start_time = time.time()
         
+        # Déterminer l'environnement actuel
+        environment = os.getenv("OHADA_ENV", "test")
+        
         # Utiliser la liste de priorité pour les embeddings
         provider_list = self.config.get_embedding_provider_list()
         
@@ -140,10 +155,16 @@ class LLMClient:
             # Vérifier si c'est un modèle local
             if params.get("local", False):
                 try:
-                    logger.info(f"Génération d'embedding avec modèle local: {embedding_model}")
+                    # Déterminer le modèle à utiliser selon l'environnement
+                    if environment == "production":
+                        model_to_use = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
+                    else:
+                        model_to_use = "all-MiniLM-L6-v2"
+                    
+                    logger.info(f"Génération d'embedding avec modèle local: {model_to_use} (env: {environment})")
                     
                     # Utiliser le pattern Singleton dans OhadaEmbedder
-                    embedder = OhadaEmbedder(model_name=embedding_model)
+                    embedder = OhadaEmbedder(model_name=model_to_use)
                     embedding = embedder.generate_embedding(text)
                     
                     elapsed = time.time() - start_time
@@ -190,14 +211,11 @@ class LLMClient:
         # Si tous les fournisseurs échouent, retourner un vecteur vide
         logger.error("Tous les fournisseurs d'embedding ont échoué. Retour d'un vecteur vide.")
         
-        # Déterminer la dimension du vecteur par défaut
-        default_dimension = 384  # Dimension du modèle all-MiniLM-L6-v2
-        try:
-            # Essayer d'obtenir la dimension à partir de la configuration
-            _, _, params = self.config.get_embedding_model()
-            default_dimension = params.get("dimensions", default_dimension)
-        except:
-            pass
+        # Déterminer la dimension du vecteur par défaut selon l'environnement
+        if environment == "production":
+            default_dimension = 1536  # Dimension pour le modèle Qwen2
+        else:
+            default_dimension = 384   # Dimension du modèle all-MiniLM-L6-v2
             
         return [0.0] * default_dimension
     

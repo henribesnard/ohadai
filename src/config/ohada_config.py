@@ -15,12 +15,12 @@ logger = logging.getLogger("ohada_config")
 class LLMConfig:
     """Gestionnaire de configuration pour les modèles de langage"""
     
-    def __init__(self, config_path: str = "./src/config/llm_config.yaml"):
+    def __init__(self, config_path: str = "./src/config"):
         """
         Initialise la configuration des modèles de langage
         
         Args:
-            config_path: Chemin vers le fichier de configuration YAML
+            config_path: Chemin vers le répertoire de configuration
         """
         self.config_path = config_path
         self.config = self._load_config()
@@ -32,26 +32,45 @@ class LLMConfig:
     
     def _load_config(self) -> Dict[str, Any]:
         """
-        Charge la configuration depuis le fichier YAML
+        Charge la configuration depuis le fichier YAML approprié selon l'environnement
         
         Returns:
             Configuration chargée ou configuration par défaut en cas d'erreur
         """
         try:
-            if not os.path.exists(self.config_path):
-                logger.warning(f"Fichier de configuration {self.config_path} non trouvé.")
+            # Vérifier l'environnement d'exécution
+            environment = os.getenv("OHADA_ENV", "test")
+            
+            # Déterminer le chemin du fichier de configuration
+            if environment == "production":
+                config_file = "llm_config_production.yaml"
+            else:
+                config_file = "llm_config_test.yaml"
+                
+            # Construire le chemin complet
+            if os.path.isdir(self.config_path):
+                # Si c'est un répertoire, construire le chemin complet
+                config_path = os.path.join(self.config_path, config_file)
+            else:
+                # Si c'est déjà un chemin de fichier, utiliser le répertoire parent
+                config_path = os.path.join(os.path.dirname(self.config_path), config_file)
+                
+            logger.info(f"Environnement {environment} détecté, utilisation de la configuration: {config_path}")
+            
+            if not os.path.exists(config_path):
+                logger.warning(f"Fichier de configuration {config_path} non trouvé.")
                 return self._get_default_config()
-                
-            with open(self.config_path, 'r', encoding='utf-8') as f:
+                    
+            with open(config_path, 'r', encoding='utf-8') as f:
                 config = yaml.safe_load(f)
-                
+                    
             # Vérifier la structure minimale requise
             if not config or 'providers' not in config:
                 logger.error("Structure de configuration invalide.")
                 return self._get_default_config()
-                
+                    
             return config
-            
+                
         except Exception as e:
             logger.error(f"Erreur lors du chargement de la configuration: {e}")
             return self._get_default_config()

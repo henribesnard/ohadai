@@ -87,6 +87,19 @@ class OhadaWordProcessor:
         file_name = os.path.basename(docx_path)
         dir_name = os.path.dirname(docx_path)
         
+        # Déterminer si c'est un document de présentation OHADA
+        if "presentation_ohada" in dir_name:
+            metadata["document_type"] = "presentation_ohada"
+            # Générer un ID basé sur le nom du fichier
+            file_base = os.path.splitext(file_name)[0].lower()
+            # Nettoyer le nom pour l'ID
+            clean_id = re.sub(r'[^a-z0-9_]', '_', file_base)
+            metadata["id"] = f"presentation_ohada_{clean_id}"
+            # Utiliser le nom du fichier comme titre
+            metadata["title"] = file_name.replace('.docx', '')
+            return metadata
+        
+        # Pour les documents standard du plan comptable
         # Déterminer la partie
         partie_match = re.search(r'partie_(\d+)', dir_name)
         if partie_match:
@@ -156,12 +169,21 @@ class OhadaWordProcessor:
         # Générer un ID
         doc_id = metadata.get("id", os.path.basename(docx_path).replace('.docx', ''))
         
-        # Construire la référence
-        reference = OhadaReference(
-            partie_num=metadata.get("partie", 1),
-            chapitre_num=metadata.get("chapitre"),
-            chapitre_title=metadata.get("title")
-        )
+        # Déterminer le type de document (chapitre standard ou présentation OHADA)
+        if metadata.get("document_type") == "presentation_ohada":
+            # Pour les documents de présentation OHADA
+            reference = OhadaReference(
+                partie_num=0,  # Pas de partie pour les documents de présentation
+                chapitre_num=None,
+                chapitre_title=metadata.get("title")
+            )
+        else:
+            # Pour les chapitres standard
+            reference = OhadaReference(
+                partie_num=metadata.get("partie", 1),
+                chapitre_num=metadata.get("chapitre"),
+                chapitre_title=metadata.get("title")
+            )
         
         # Créer le document
         document = OhadaDocument(
@@ -194,16 +216,24 @@ class OhadaWordProcessor:
         embedding = self.embedder.generate_embedding(document.text)
         
         # Déterminer les collections pour ce document
-        collections = ["plan_comptable"]  # Collection principale
+        collections = []
         
-        # Ajouter la collection de la partie
-        if "partie" in document.metadata:
-            collections.append(f"partie_{document.metadata['partie']}")
-        
-        # Ajouter les collections spécifiques basées sur le type
-        document_type = document.metadata.get("document_type", "")
-        if document_type == "chapitre":
-            collections.append("chapitres")
+        # Sélectionner les collections en fonction du type de document
+        if document.metadata.get("document_type") == "presentation_ohada":
+            collections.append("presentation_ohada")
+            collections.append("plan_comptable")  # Ajouter aussi à la collection principale
+        else:
+            # Collections pour les documents standard
+            collections.append("plan_comptable")  # Collection principale
+            
+            # Ajouter la collection de la partie
+            if "partie" in document.metadata:
+                collections.append(f"partie_{document.metadata['partie']}")
+            
+            # Ajouter les collections spécifiques basées sur le type
+            document_type = document.metadata.get("document_type", "")
+            if document_type == "chapitre":
+                collections.append("chapitres")
         
         # Ajouter à chaque collection
         successful = True
@@ -312,6 +342,55 @@ def ingest_ohada_docx(docx_dir: str, vector_db: OhadaVectorDB, extensions: List[
     return successful_files
 
 
+def ingest_presentation_ohada(presentation_dir: str, vector_db: OhadaVectorDB):
+    """Ingère les documents de présentation OHADA dans la base vectorielle
+    
+    Args:
+        presentation_dir: Répertoire contenant les documents de présentation
+        vector_db: Instance de la base de données vectorielle
+        
+    Returns:
+        Liste des fichiers traités avec succès
+    """
+    # Initialiser le processeur Word
+    processor = OhadaWordProcessor(vector_db)
+    
+    # Rechercher les fichiers Word dans le répertoire de présentation
+    presentation_files = glob.glob(os.path.join(presentation_dir, "*.docx"))
+    
+    if not presentation_files:
+        print(f"Aucun fichier de présentation trouvé dans {presentation_dir}")
+        return []
+    
+    print(f"Nombre de fichiers de présentation trouvés: {len(presentation_files)}")
+    
+    # Ingérer chaque fichier
+    successful_files = []
+    failed_files = []
+    
+    for i, docx_path in enumerate(tqdm(presentation_files, desc="Ingestion des présentations OHADA")):
+        print(f"\nIngestion {i+1}/{len(presentation_files)}: {os.path.basename(docx_path)}")
+        try:
+            success = processor.ingest_docx_file(docx_path)
+            if success:
+                successful_files.append(docx_path)
+            else:
+                failed_files.append(docx_path)
+        except Exception as e:
+            print(f"Erreur lors de l'ingestion de {docx_path}: {e}")
+            failed_files.append(docx_path)
+    
+    # Résumé
+    print(f"\nIngestion des présentations terminée: {len(successful_files)} fichiers traités avec succès, {len(failed_files)} échecs")
+    
+    if failed_files:
+        print("\nFichiers échoués:")
+        for file in failed_files:
+            print(f"  - {file}")
+    
+    return successful_files
+
+
 def build_toc_from_docx(docx_dir: str, toc_file: str):
     """Construit une table des matières à partir des fichiers Word
     
@@ -326,6 +405,7 @@ def build_toc_from_docx(docx_dir: str, toc_file: str):
     toc = {
         "parties": [],
         "chapitres": [],
+        "presentations": [],  # Nouvelle section pour les documents de présentation
         "lookup": {}
     }
     
@@ -390,6 +470,29 @@ def build_toc_from_docx(docx_dir: str, toc_file: str):
             toc["chapitres"].append(chapitre_entry)
             toc["lookup"][chapitre_id] = chapitre_entry
     
+    # Rechercher les fichiers de présentation OHADA
+    presentation_dir = os.path.join(os.path.dirname(docx_dir), "base_connaissances", "presentation_ohada")
+    if os.path.exists(presentation_dir):
+        presentation_files = glob.glob(os.path.join(presentation_dir, "*.docx"))
+        
+        for pres_file in sorted(presentation_files):
+            file_name = os.path.basename(pres_file)
+            file_base = os.path.splitext(file_name)[0]
+            
+            # Générer un ID pour le document de présentation
+            clean_id = re.sub(r'[^a-z0-9_]', '_', file_base.lower())
+            doc_id = f"presentation_ohada_{clean_id}"
+            
+            # Ajouter l'entrée de présentation à la TOC
+            presentation_entry = {
+                "type": "presentation_ohada",
+                "titre": file_base,
+                "id": doc_id,
+                "docx_path": pres_file
+            }
+            toc["presentations"].append(presentation_entry)
+            toc["lookup"][doc_id] = presentation_entry
+    
     # Sauvegarder la TOC
     os.makedirs(os.path.dirname(toc_file), exist_ok=True)
     with open(toc_file, 'w', encoding='utf-8') as f:
@@ -398,30 +501,46 @@ def build_toc_from_docx(docx_dir: str, toc_file: str):
     print(f"Table des matières construite et sauvegardée dans {toc_file}")
     print(f"  - {len(toc['parties'])} parties")
     print(f"  - {len(toc['chapitres'])} chapitres")
+    print(f"  - {len(toc['presentations'])} documents de présentation")
     
     return toc
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ingesteur de Word pour le plan comptable OHADA")
-    parser.add_argument("--docx-dir", default="./base_connaissances/plan_comptable/chapitres_word", 
+    parser.add_argument("--docx-dir", default="./plan_comptable/chapitres_word", 
                       help="Répertoire contenant les fichiers Word (défaut: ./plan_comptable/chapitres_word)")
-    parser.add_argument("--toc-file", default="./base_connaissances/plan_comptable/ohada_toc.json", 
-                      help="Fichier de table des matières (défaut: ./base_connaissances/plan_comptable/ohada_toc.json)")
+    parser.add_argument("--presentation-dir", default="./base_connaissances/presentation_ohada", 
+                      help="Répertoire contenant les documents de présentation OHADA")
+    parser.add_argument("--toc-file", default="./plan_comptable/ohada_toc.json", 
+                      help="Fichier de table des matières (défaut: ./plan_comptable/ohada_toc.json)")
     parser.add_argument("--build-toc", action="store_true", 
                       help="Construire la table des matières")
     parser.add_argument("--reset", action="store_true", 
                       help="Réinitialiser la base de données vectorielle")
-    parser.add_argument("--model", default="Alibaba-NLP/gte-Qwen2-1.5B-instruct", 
-                      help="Modèle d'embedding à utiliser (défaut: Alibaba-NLP/gte-Qwen2-1.5B-instruct)")
+    parser.add_argument("--model", default=None, 
+                      help="Modèle d'embedding à utiliser (si non spécifié, déterminé selon l'environnement)")
     parser.add_argument("--partie", type=int, choices=[1, 2, 3, 4], 
                       help="Traiter uniquement une partie spécifique (1-4)")
+    parser.add_argument("--presentations-only", action="store_true",
+                      help="Traiter uniquement les documents de présentation OHADA")
+    parser.add_argument("--env", choices=["test", "production"], default=None,
+                      help="Définir l'environnement (remplace la variable d'environnement OHADA_ENV)")
     
     args = parser.parse_args()
     
-    # Vérifier que le répertoire existe
-    if not os.path.exists(args.docx_dir):
+    # Définir l'environnement si spécifié
+    if args.env:
+        os.environ["OHADA_ENV"] = args.env
+        print(f"Environnement défini: {args.env}")
+    
+    # Vérifier que les répertoires existent
+    if not args.presentations_only and not os.path.exists(args.docx_dir):
         print(f"Erreur: Le répertoire {args.docx_dir} n'existe pas.")
+        exit(1)
+    
+    if args.presentations_only and not os.path.exists(args.presentation_dir):
+        print(f"Erreur: Le répertoire de présentation {args.presentation_dir} n'existe pas.")
         exit(1)
     
     # Construire la table des matières si demandé
@@ -437,15 +556,24 @@ if __name__ == "__main__":
         if response.lower() == 'y':
             vector_db.reset_database()
     
-    # Ingérer les fichiers Word
-    if args.partie:
-        # Filtrer uniquement la partie demandée
-        partie_dir = os.path.join(args.docx_dir, f"partie_{args.partie}")
-        if os.path.exists(partie_dir):
-            print(f"Traitement uniquement de la partie {args.partie}")
-            ingest_ohada_docx(partie_dir, vector_db)
+    # Ingérer les documents de présentation OHADA si demandé
+    if args.presentations_only or (not args.partie):
+        if os.path.exists(args.presentation_dir):
+            print(f"Traitement des documents de présentation OHADA dans {args.presentation_dir}")
+            ingest_presentation_ohada(args.presentation_dir, vector_db)
         else:
-            print(f"Erreur: Le répertoire de la partie {args.partie} n'existe pas: {partie_dir}")
-    else:
-        # Traiter toutes les parties
-        ingest_ohada_docx(args.docx_dir, vector_db)
+            print(f"Avertissement: Le répertoire de présentation {args.presentation_dir} n'existe pas.")
+    
+    # Ingérer les fichiers Word si non exclusivement limité aux présentations
+    if not args.presentations_only:
+        if args.partie:
+            # Filtrer uniquement la partie demandée
+            partie_dir = os.path.join(args.docx_dir, f"partie_{args.partie}")
+            if os.path.exists(partie_dir):
+                print(f"Traitement uniquement de la partie {args.partie}")
+                ingest_ohada_docx(partie_dir, vector_db)
+            else:
+                print(f"Erreur: Le répertoire de la partie {args.partie} n'existe pas: {partie_dir}")
+        else:
+            # Traiter toutes les parties
+            ingest_ohada_docx(args.docx_dir, vector_db)

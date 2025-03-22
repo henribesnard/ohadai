@@ -1,11 +1,11 @@
 # Configuration des modèles de langage pour le projet OHADA Expert-Comptable
-# Version optimisée avec modèle d'embedding léger
+# Version de production avec modèles open-source avancés
 
 # Liste des fournisseurs par ordre de priorité pour les réponses
 provider_priority:
+  - "local"
   - "deepseek"
   - "openai"
-  - "local"
 
 # Liste des fournisseurs par ordre de priorité pour les embeddings
 embedding_provider_priority:
@@ -13,12 +13,36 @@ embedding_provider_priority:
   - "openai"
 
 # Fournisseur par défaut pour les réponses
-default_provider: "deepseek"
+default_provider: "local"
 
 # Fournisseur par défaut pour les embeddings
 default_embedding_provider: "local_embedding"
 
 providers:
+  local:
+    enabled: true
+    api_key_env: "OLLAMA_API_KEY"
+    base_url: "http://localhost:11434/api"
+    models:
+      default: "mistral:7b-instruct-v0.2"
+      analysis: "mistral:7b-instruct-v0.2"
+      response: "mistral:7b-instruct-v0.2"
+    parameters:
+      temperature: 0.3
+      top_p: 0.9
+      max_tokens: 1500
+      local: true
+      
+  local_embedding:
+    # Configuration pour l'embedder d'Alibaba en production
+    enabled: true
+    models:
+      embedding: "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
+    parameters:
+      dimensions: 1536
+      local: true
+      
+  # Configurations de secours si les modèles locaux échouent
   deepseek:
     api_key_env: "DEEPSEEK_API_KEY"
     base_url: "https://api.deepseek.com/v1"
@@ -42,30 +66,7 @@ providers:
       temperature: 0.3
       top_p: 0.9
       max_tokens: 1500
-      dimensions: 1536  # Pour les embeddings OpenAI
-      
-  local_embedding:
-    # Pas besoin de clé API pour les modèles locaux d'embeddings
-    enabled: true
-    models:
-      embedding: "all-MiniLM-L6-v2"  # Modèle léger avec dimension 384
-    parameters:
-      dimensions: 384  # Dimension réduite par rapport au modèle précédent
-      local: true  # Indique que c'est un modèle local, pas une API
-      
-  # Configuration pour les modèles locaux de génération (à activer plus tard)
-  local:
-    enabled: false
-    api_key_env: "OLLAMA_API_KEY"  # Optionnel
-    base_url: "http://localhost:11434/api"
-    models:
-      default: "mistral:7b-instruct-v0.2"
-      analysis: "mistral:7b-instruct-v0.2"
-      response: "llama3:8b"
-    parameters:
-      temperature: 0.3
-      top_p: 0.9
-      max_tokens: 1500
+      dimensions: 1536
 
 assistant_personality:
   name: "Expert OHADA"
@@ -93,3 +94,6 @@ assistant_personality:
     - "Réglementation comptable dans l'espace OHADA"
     - "Réglementation fiscale dans l'espace OHADA"
     - "États financiers conformes aux standards OHADA"
+    - "Conseils en comptabilité et fiscalité"
+    - "Formation en comptabilité et finance"
+    

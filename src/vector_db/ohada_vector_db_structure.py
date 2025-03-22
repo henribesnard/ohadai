@@ -46,7 +46,15 @@ class OhadaEmbedder:
     _instance = None
     _model_cache = {}
     
-    def __new__(cls, model_name="all-MiniLM-L6-v2"):
+    def __new__(cls, model_name=None):
+        # Déterminer le modèle d'embedding selon l'environnement
+        if model_name is None:
+            environment = os.getenv("OHADA_ENV", "test")
+            if environment == "production":
+                model_name = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
+            else:
+                model_name = "all-MiniLM-L6-v2"
+        
         if cls._instance is None or cls._instance.model_name != model_name:
             cls._instance = super(OhadaEmbedder, cls).__new__(cls)
             cls._instance.model_name = model_name
@@ -55,7 +63,12 @@ class OhadaEmbedder:
         
     def _initialize_model(self):
         """Initialise le modèle d'embedding une seule fois"""
-        self.embedding_dimension = 384  # Dimension par défaut pour all-MiniLM-L6-v2
+        # Définir la dimension par défaut selon le modèle
+        if "qwen" in self.model_name.lower():
+            self.embedding_dimension = 1536  # Dimension pour Qwen
+        else:
+            self.embedding_dimension = 384  # Dimension par défaut pour all-MiniLM-L6-v2
+        
         if self.model_name in self._model_cache:
             self.model = self._model_cache[self.model_name]
             print(f"Modèle d'embedding {self.model_name} récupéré du cache")
@@ -192,13 +205,13 @@ class OhadaVectorDB:
     
     def __init__(self, persist_directory: str = "./data/vector_db", 
                  toc_file: str = "./plan_comptable/ohada_toc.json", 
-                 embedding_model: str = "all-MiniLM-L6-v2"):
+                 embedding_model: str = None):
         """Initialise la base de connaissances vectorielle
         
         Args:
             persist_directory: Répertoire de persistance pour ChromaDB
             toc_file: Chemin vers le fichier JSON contenant la table des matières structurée
-            embedding_model: Nom du modèle d'embedding à utiliser
+            embedding_model: Nom du modèle d'embedding à utiliser (si None, sélectionné selon l'environnement)
         """
         self.persist_directory = persist_directory
         self.toc_file = toc_file
@@ -309,6 +322,21 @@ class OhadaVectorDB:
             )
             self.collection_titles["chapitres"] = "Chapitres du plan comptable OHADA"
             print(f"Nouvelle collection 'chapitres' créée.")
+        
+        # Nouvelle collection pour la présentation OHADA et le traité relatif
+        try:
+            self.collections["presentation_ohada"] = self.client.get_collection(
+                name="presentation_ohada"
+            )
+            self.collection_titles["presentation_ohada"] = "Présentation OHADA et traité relatif"
+            print("Collection existante 'presentation_ohada' récupérée.")
+        except Exception:
+            self.collections["presentation_ohada"] = self.client.create_collection(
+                name="presentation_ohada",
+                metadata={"description": "Présentation générale de l'OHADA et traité relatif"}
+            )
+            self.collection_titles["presentation_ohada"] = "Présentation OHADA et traité relatif"
+            print(f"Nouvelle collection 'presentation_ohada' créée.")
     
     def display_collection_titles(self):
         """Affiche les titres de toutes les collections"""
@@ -630,13 +658,20 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Gestionnaire de la base de données vectorielle OHADA")
     parser.add_argument("--reset", action="store_true", help="Réinitialiser la base de données vectorielle")
-    parser.add_argument("--model", default="all-MiniLM-L6-v2", 
-                      help="Modèle d'embedding à utiliser")
+    parser.add_argument("--model", default=None, 
+                      help="Modèle d'embedding à utiliser (si non spécifié, déterminé selon l'environnement)")
     parser.add_argument("--test", action="store_true", help="Tester la qualité des embeddings")
     parser.add_argument("--toc-file", default="./plan_comptable/ohada_toc.json", 
                       help="Chemin vers le fichier JSON de la table des matières")
+    parser.add_argument("--env", choices=["test", "production"], default=None,
+                      help="Définir l'environnement (remplace la variable d'environnement OHADA_ENV)")
     
     args = parser.parse_args()
+    
+    # Définir l'environnement si spécifié
+    if args.env:
+        os.environ["OHADA_ENV"] = args.env
+        print(f"Environnement défini: {args.env}")
     
     # Initialiser la base vectorielle
     vector_db = OhadaVectorDB(embedding_model=args.model, toc_file=args.toc_file)
