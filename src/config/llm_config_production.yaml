@@ -1,48 +1,23 @@
 # Configuration des modèles de langage pour le projet OHADA Expert-Comptable
-# Version de production avec modèles open-source avancés
+# Version de test standardisée sur les API OpenAI pour les embeddings
 
 # Liste des fournisseurs par ordre de priorité pour les réponses
 provider_priority:
-  - "local"
   - "deepseek"
   - "openai"
+  - "local"
 
 # Liste des fournisseurs par ordre de priorité pour les embeddings
 embedding_provider_priority:
-  - "local_embedding"
   - "openai"
 
 # Fournisseur par défaut pour les réponses
-default_provider: "local"
+default_provider: "deepseek"
 
 # Fournisseur par défaut pour les embeddings
-default_embedding_provider: "local_embedding"
+default_embedding_provider: "openai"
 
 providers:
-  local:
-    enabled: true
-    api_key_env: "OLLAMA_API_KEY"
-    base_url: "http://localhost:11434/api"
-    models:
-      default: "mistral:7b-instruct-v0.2"
-      analysis: "mistral:7b-instruct-v0.2"
-      response: "mistral:7b-instruct-v0.2"
-    parameters:
-      temperature: 0.3
-      top_p: 0.9
-      max_tokens: 1500
-      local: true
-      
-  local_embedding:
-    # Configuration pour l'embedder d'Alibaba en production
-    enabled: true
-    models:
-      embedding: "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
-    parameters:
-      dimensions: 1536
-      local: true
-      
-  # Configurations de secours si les modèles locaux échouent
   deepseek:
     api_key_env: "DEEPSEEK_API_KEY"
     base_url: "https://api.deepseek.com/v1"
@@ -66,7 +41,22 @@ providers:
       temperature: 0.3
       top_p: 0.9
       max_tokens: 1500
-      dimensions: 1536
+      dimensions: 1536  
+      
+  # Configuration pour les modèles locaux de génération (désactivés en test)
+  local:
+    enabled: false
+    api_key_env: "OLLAMA_API_KEY"
+    base_url: "http://localhost:11434/api"
+    models:
+      default: "mistral:7b-instruct-v0.2"
+      analysis: "mistral:7b-instruct-v0.2"
+      response: "llama3:8b"
+    parameters:
+      temperature: 0.3
+      top_p: 0.9
+      max_tokens: 1500
+      local: true
 
 assistant_personality:
   name: "Expert OHADA"
@@ -94,6 +84,3 @@ assistant_personality:
     - "Réglementation comptable dans l'espace OHADA"
     - "Réglementation fiscale dans l'espace OHADA"
     - "États financiers conformes aux standards OHADA"
-    - "Conseils en comptabilité et fiscalité"
-    - "Formation en comptabilité et finance"
-    

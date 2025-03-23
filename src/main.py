@@ -440,13 +440,7 @@ def main():
         print("Préchargement du modèle d'embedding (cela peut prendre un moment)...")
         from src.vector_db.ohada_vector_db_structure import OhadaEmbedder
         # Charger le modèle en utilisant le constructeur (qui va maintenant utiliser un singleton)
-        
-        # Déterminer le modèle à utiliser selon l'environnement
-        if ENVIRONMENT == "production":
-            embedding_model = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
-        else:
-            embedding_model = "all-MiniLM-L6-v2"
-            
+        embedding_model = "text-embedding-3-small"   
         embedder = OhadaEmbedder(model_name=embedding_model)
         # Générer un petit embedding pour s'assurer que tout fonctionne
         _ = embedder.generate_embedding("Test de préchargement")

@@ -560,10 +560,10 @@ def create_ohada_query_api(config_path: str = "./src/config") -> OhadaHybridRetr
    environment = os.getenv("OHADA_ENV", "test")
    
    if environment == "production":
-       embedding_model = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
+       embedding_model = "text-embedding-3-small"
        logger.info(f"Environnement de production: utilisation du modèle d'embedding {embedding_model}")
    else:
-       embedding_model = "all-MiniLM-L6-v2"
+       embedding_model = "text-embedding-3-small"
        logger.info(f"Environnement de test: utilisation du modèle d'embedding léger {embedding_model}")
    
    # Initialiser la base de données vectorielle

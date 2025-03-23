@@ -37,12 +37,9 @@ class LLMClient:
             environment = os.getenv("OHADA_ENV", "test")
             
             # Choisir le modèle d'embedding en fonction de l'environnement
-            if environment == "production":
-                embedding_model = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
-                dimensions = 1536
-            else:
-                embedding_model = "all-MiniLM-L6-v2"
-                dimensions = 384
+            
+            embedding_model = "text-embedding-3-small"
+            dimensions = 1536
             
             embedding_provider, model_name, _ = self.config.get_embedding_model()
             
@@ -155,13 +152,10 @@ class LLMClient:
             # Vérifier si c'est un modèle local
             if params.get("local", False):
                 try:
-                    # Déterminer le modèle à utiliser selon l'environnement
-                    if environment == "production":
-                        model_to_use = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
-                    else:
-                        model_to_use = "all-MiniLM-L6-v2"
                     
-                    logger.info(f"Génération d'embedding avec modèle local: {model_to_use} (env: {environment})")
+                    model_to_use = "text-embedding-3-small"
+                    
+                    logger.info(f"Génération d'embedding avec modèle: {model_to_use} (env: {environment})")
                     
                     # Utiliser le pattern Singleton dans OhadaEmbedder
                     embedder = OhadaEmbedder(model_name=model_to_use)
@@ -212,10 +206,8 @@ class LLMClient:
         logger.error("Tous les fournisseurs d'embedding ont échoué. Retour d'un vecteur vide.")
         
         # Déterminer la dimension du vecteur par défaut selon l'environnement
-        if environment == "production":
-            default_dimension = 1536  # Dimension pour le modèle Qwen2
-        else:
-            default_dimension = 384   # Dimension du modèle all-MiniLM-L6-v2
+        
+        default_dimension = 1536  
             
         return [0.0] * default_dimension
     

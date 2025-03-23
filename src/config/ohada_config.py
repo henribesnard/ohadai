@@ -1,7 +1,7 @@
 """
 Module de configuration pour le système OHADA Expert-Comptable.
 Gère le chargement et l'accès aux configurations des modèles de langage.
-Optimisé pour utiliser des modèles d'embedding légers.
+Standardisé pour utiliser OpenAI pour les embeddings.
 """
 
 import os
@@ -77,22 +77,22 @@ class LLMConfig:
     
     def _get_default_config(self) -> Dict[str, Any]:
         """
-        Retourne une configuration par défaut adaptée aux modèles légers
+        Retourne une configuration par défaut standardisée sur OpenAI pour les embeddings
         
         Returns:
             Configuration par défaut
         """
         return {
             "default_provider": "openai",
-            "default_embedding_provider": "local_embedding",
-            "provider_priority": ["openai"],
-            "embedding_provider_priority": ["local_embedding", "openai"],
+            "default_embedding_provider": "openai",
+            "provider_priority": ["openai", "deepseek"],
+            "embedding_provider_priority": ["openai"],
             "providers": {
                 "openai": {
                     "api_key_env": "OPENAI_API_KEY",
                     "models": {
                         "default": "gpt-3.5-turbo-0125",
-                        "embedding": "text-embedding-ada-002",
+                        "embedding": "text-embedding-3-small",
                         "response": "gpt-3.5-turbo-0125"
                     },
                     "parameters": {
@@ -100,16 +100,6 @@ class LLMConfig:
                         "top_p": 0.9,
                         "max_tokens": 1000,
                         "dimensions": 1536
-                    }
-                },
-                "local_embedding": {
-                    "enabled": True,
-                    "models": {
-                        "embedding": "all-MiniLM-L6-v2"
-                    },
-                    "parameters": {
-                        "dimensions": 384,  # Dimension du modèle MiniLM (plus petit que les 1536 d'OpenAI)
-                        "local": True
                     }
                 },
                 "deepseek": {
@@ -241,8 +231,9 @@ class LLMConfig:
                 
                 return p, embedding_model, params
         
-        # Fallback sur le modèle local par défaut
-        return "local_embedding", "all-MiniLM-L6-v2", {"local": True, "dimensions": 384}
+        # Fallback sur OpenAI au lieu du modèle local
+        logger.warning("Aucun fournisseur d'embedding valide trouvé, utilisation d'OpenAI par défaut")
+        return "openai", "text-embedding-3-small", {"api_key_env": "OPENAI_API_KEY", "dimensions": 1536}
     
     def get_response_model(self, provider: str = None) -> Tuple[str, str, Dict[str, Any]]:
         """

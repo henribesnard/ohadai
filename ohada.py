@@ -32,7 +32,7 @@ def verify_environment():
     """
     # Vérifier les variables d'environnement nécessaires
     required_vars = [
-        'OPENAI_API_KEY',  # Pour OpenAI (GPT-4, etc.)
+        'OPENAI_API_KEY',  # Pour OpenAI (GPT-4, embeddings, etc.)
         'DEEPSEEK_API_KEY'  # Pour DeepSeek (optionnel)
     ]
     
@@ -86,14 +86,22 @@ def init_database(reset=False, model=None):
         model: Modèle d'embedding à utiliser
     """
     from src.vector_db.ohada_vector_db_structure import OhadaVectorDB
+    from src.config.ohada_config import LLMConfig
     
     logger.info("Initialisation de la base de données vectorielle")
     
-    # Paramètres du modèle d'embedding
-    embedding_model = model or "all-MiniLM-L6-v2"
+    # Déterminer le modèle d'embedding à utiliser
+    if not model:
+        # Utiliser la configuration pour choisir le modèle
+        config = LLMConfig()
+        provider, model_name, _ = config.get_embedding_model()
+        embedding_model = model_name
+    else:
+        embedding_model = model
+    
     logger.info(f"Utilisation du modèle d'embedding: {embedding_model}")
     
-    # Initialiser la base de données
+    # Initialiser la base de données avec le modèle OpenAI
     vector_db = OhadaVectorDB(embedding_model=embedding_model)
     
     if reset:
@@ -258,7 +266,7 @@ def main():
     # Commande: init
     init_parser = subparsers.add_parser("init", help="Initialiser la base de données")
     init_parser.add_argument("--reset", action="store_true", help="Réinitialiser la base de données")
-    init_parser.add_argument("--model", default="all-MiniLM-L6-v2", 
+    init_parser.add_argument("--model", default="text-embedding-3-small", 
                           help="Modèle d'embedding à utiliser")
     
     # Commande: ingest
@@ -267,7 +275,7 @@ def main():
                             help="Répertoire contenant les fichiers Word")
     ingest_parser.add_argument("--reset", action="store_true", 
                             help="Réinitialiser la base de données avant l'ingestion")
-    ingest_parser.add_argument("--model", default="all-MiniLM-L6-v2", 
+    ingest_parser.add_argument("--model", default="text-embedding-3-small", 
                             help="Modèle d'embedding à utiliser")
     ingest_parser.add_argument("--partie", type=int, choices=[1, 2, 3, 4], 
                             help="Traiter uniquement une partie spécifique (1-4)")
