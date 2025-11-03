@@ -1,0 +1,235 @@
+version: '3.8'
+
+services:
+  # PostgreSQL - Base de données principale
+  postgres:
+    image: postgres:15-alpine
+    container_name: ohada-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ohada
+      POSTGRES_USER: ohada_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_in_production}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=fr_FR.UTF-8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/db/init:/docker-entrypoint-initdb.d  # Scripts d'initialisation
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ohada_user -d ohada"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ohada-network
+
+  # Redis - Cache et queue
+  redis:
+    image: redis:7-alpine
+    container_name: ohada-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6382:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ohada-network
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        INSTALL_DEV: "false"
+    container_name: ohada-backend
+    restart: unless-stopped
+    environment:
+      # Base de données
+      DATABASE_URL: postgresql://ohada_user:${POSTGRES_PASSWORD:-changeme_in_production}@postgres:5432/ohada
+
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+
+      # ChromaDB
+      CHROMA_DB_PATH: /app/data/vector_db
+
+      # Environment
+      OHADA_ENV: ${OHADA_ENV:-production}
+
+      # API Keys
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+
+      # JWT
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_ALGORITHM: HS256
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: 7
+
+      # Admin
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-admin@ohada.com}
+
+      # CORS
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+
+      # Server
+      HOST: 0.0.0.0
+      PORT: 8000
+      WORKERS: ${WORKERS:-4}
+    volumes:
+      - ./data:/app/data  # Données persistantes (vector DB, uploads)
+      - ./logs:/app/logs  # Logs
+      - ./backend/src:/app/src  # Code source (dev only)
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - ohada-network
+
+  # Celery Worker - Traitement asynchrone
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        INSTALL_DEV: "false"
+    container_name: ohada-celery-worker
+    restart: unless-stopped
+    command: celery -A src.tasks.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      DATABASE_URL: postgresql://ohada_user:${POSTGRES_PASSWORD:-changeme_in_production}@postgres:5432/ohada
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      CHROMA_DB_PATH: /app/data/vector_db
+      OHADA_ENV: ${OHADA_ENV:-production}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./backend/src:/app/src
+    depends_on:
+      - redis
+      - postgres
+      - backend
+    networks:
+      - ohada-network
+
+  # Celery Beat - Tâches planifiées
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        INSTALL_DEV: "false"
+    container_name: ohada-celery-beat
+    restart: unless-stopped
+    command: celery -A src.tasks.celery_app beat --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://ohada_user:${POSTGRES_PASSWORD:-changeme_in_production}@postgres:5432/ohada
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      OHADA_ENV: ${OHADA_ENV:-production}
+    volumes:
+      - ./logs:/app/logs
+      - ./backend/src:/app/src
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - ohada-network
+
+  # Prometheus - Métriques
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ohada-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - ohada-network
+
+  # Grafana - Dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ohada-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - ohada-network
+
+  # Nginx - Reverse proxy (optionnel, pour production)
+  nginx:
+    image: nginx:alpine
+    container_name: ohada-nginx
+    restart: unless-stopped
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro  # Certificats SSL
+      - ./logs/nginx:/var/log/nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+    networks:
+      - ohada-network
+
+networks:
+  ohada-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local

@@ -1,0 +1,9 @@
+@echo off
+echo Arrêt du serveur en cours...
+FOR /F "tokens=5" %%P IN ('netstat -ano ^| findstr :8000') DO taskkill /F /PID %%P 2>nul
+timeout /t 2 /nobreak >nul
+echo Démarrage du serveur...
+set PYTHONPATH=%CD%
+start "OHADA API Server" cmd /k "uvicorn src.api.ohada_api_server:app --host 0.0.0.0 --port 8000 --reload"
+echo Serveur redémarré ! Attendez quelques secondes pour qu'il soit prêt...
+timeout /t 5 /nobreak
