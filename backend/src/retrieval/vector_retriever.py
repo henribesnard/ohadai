@@ -12,45 +12,70 @@ logger = logging.getLogger("ohada_vector_retriever")
 class VectorRetriever:
     """Système de recherche vectorielle pour les documents OHADA"""
     
-    def __init__(self, vector_db, embedding_cache=None):
+    def __init__(self, vector_db, embedding_cache=None, redis_cache=None):
         """
         Initialise le retrieveur vectoriel
-        
+
         Args:
             vector_db: Instance de la base vectorielle
-            embedding_cache: Cache d'embeddings (optionnel)
+            embedding_cache: Cache d'embeddings local (optionnel)
+            redis_cache: Cache Redis distribué (optionnel, OPTIMISATION PHASE 2)
         """
         self.vector_db = vector_db
         self.embedding_cache = embedding_cache or {}
-    
+        self.redis_cache = redis_cache  # Cache distribué pour embeddings
+
     def get_embedding(self, text: str, embedder) -> List[float]:
         """
-        Récupère ou génère un embedding pour un texte
-        
+        Récupère ou génère un embedding pour un texte.
+
+        OPTIMISATION PHASE 2: Utilise Redis comme cache distribué en priorité,
+        puis le cache local, puis génère un nouvel embedding si nécessaire.
+
+        Cascade de cache:
+        1. Cache Redis (partagé, ~1-2ms) ✓
+        2. Cache local (mémoire, ~0.1ms) ✓
+        3. Génération API OpenAI (réseau, ~50-150ms)
+
         Args:
             text: Texte à transformer en embedding
             embedder: Fonction ou objet qui génère des embeddings
-            
+
         Returns:
             Vecteur d'embedding
         """
-        # Utiliser un hash du texte comme clé de cache
+        # 1. Vérifier le cache Redis distribué en premier (OPTIMISATION)
+        if self.redis_cache and self.redis_cache.enabled:
+            cached_embedding = self.redis_cache.get_embedding(text)
+            if cached_embedding:
+                logger.debug(f"✓ Redis cache HIT pour embedding: {text[:50]}")
+                # Mettre aussi en cache local pour accès ultra-rapide
+                text_hash = hash(text)
+                self.embedding_cache[text_hash] = cached_embedding
+                return cached_embedding
+
+        # 2. Vérifier le cache local
         text_hash = hash(text)
-        
+
         if text_hash in self.embedding_cache:
+            logger.debug(f"✓ Local cache HIT pour embedding: {text[:50]}")
             return self.embedding_cache[text_hash]
-        
-        # Générer un nouvel embedding
+
+        # 3. Générer un nouvel embedding (LENT: ~50-150ms)
+        logger.debug(f"Génération nouvel embedding pour: {text[:50]}")
         embedding = embedder(text)
-        
-        # Mettre en cache
+
+        # 4. Mettre en cache (Redis + local)
+        if self.redis_cache and self.redis_cache.enabled:
+            self.redis_cache.set_embedding(text, embedding, ttl=86400)  # 24h
+
         self.embedding_cache[text_hash] = embedding
-        
-        # Limiter la taille du cache (garder les 100 derniers embeddings)
+
+        # Limiter la taille du cache local (garder les 100 derniers embeddings)
         if len(self.embedding_cache) > 100:
             # Supprimer l'entrée la plus ancienne (FIFO)
             self.embedding_cache.pop(next(iter(self.embedding_cache)))
-        
+
         return embedding
     
     def search(self, collection_name: str, query_embedding: List[float],
