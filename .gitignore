@@ -37,6 +37,11 @@ tmp/
 
 # Base de données vectorielle
 vector_db/
+chroma_db/
+backend/chroma_db/
+backend/backend/chroma_db/
+*.sqlite3
+*.db
 
 # Fichiers de configuration sensibles
 config_local.yaml
@@ -71,3 +76,18 @@ htmlcov/
 # Autre
 .ipynb_checkpoints
 .mypy_cache/
+
+# Configuration locale Claude Code
+.claude/
+
+# Artefacts Windows
+nul
+frontend/nul
+
+# Logs API
+ohada_api_*.log
+backend/ohada_api_*.log
+
+# Cache BM25
+backend/bm25_cache/
+bm25_cache/
