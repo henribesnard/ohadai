@@ -90,7 +90,7 @@ class OhadaHybridRetriever:
            try:
                import chromadb
                # Utiliser le même chemin que l'ingestion
-               chroma_client = chromadb.PersistentClient(path="chroma_db")
+               chroma_client = chromadb.PersistentClient(path="backend/chroma_db")
                collection = chroma_client.get_collection(coll_name or collection_name)
 
                # Récupérer tous les documents (limité pour performance)
